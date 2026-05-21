@@ -11,12 +11,15 @@ public final class MistRadiusPayload {
     public final double animateFromRadius;   // same as radius if no animation desired
     public final double centerX;
     public final double centerZ;
+    public final int    tierOrdinal;
 
-    public MistRadiusPayload(double radius, double animateFromRadius, double centerX, double centerZ) {
+    public MistRadiusPayload(double radius, double animateFromRadius,
+                             double centerX, double centerZ, int tierOrdinal) {
         this.radius = radius;
         this.animateFromRadius = animateFromRadius;
         this.centerX = centerX;
         this.centerZ = centerZ;
+        this.tierOrdinal = tierOrdinal;
     }
 
     public static MistRadiusPayload decode(PacketByteBuf buf) {
@@ -24,7 +27,8 @@ public final class MistRadiusPayload {
         double af = buf.readDouble();
         double cx = buf.readDouble();
         double cz = buf.readDouble();
-        return new MistRadiusPayload(r, af, cx, cz);
+        int t     = buf.readInt();
+        return new MistRadiusPayload(r, af, cx, cz, t);
     }
 
     public PacketByteBuf encode() {
@@ -33,14 +37,15 @@ public final class MistRadiusPayload {
         buf.writeDouble(animateFromRadius);
         buf.writeDouble(centerX);
         buf.writeDouble(centerZ);
+        buf.writeInt(tierOrdinal);
         return buf;
     }
 
     public static void sendTo(ServerPlayerEntity player, double radius, double animateFromRadius,
-                              double centerX, double centerZ) {
+                              double centerX, double centerZ, int tierOrdinal) {
         ServerPlayNetworking.send(player, MistsConstants.MIST_RADIUS_PACKET,
-            new MistRadiusPayload(radius, animateFromRadius, centerX, centerZ).encode());
+            new MistRadiusPayload(radius, animateFromRadius, centerX, centerZ, tierOrdinal).encode());
     }
 
-    private MistRadiusPayload() { this(0, 0, 0, 0); }
+    private MistRadiusPayload() { this(0, 0, 0, 0, 0); }
 }

@@ -12,6 +12,9 @@
     "main":   ["io.github.xsirdon.mists.Mists"],
     "client": ["io.github.xsirdon.mists.MistsClient"]
   },
+  "mixins": [
+    { "config": "mists.mixins.json", "environment": "client" }
+  ],
   "depends": {
     "fabricloader": ">=0.16.0",
     "minecraft": "~1.20.1",

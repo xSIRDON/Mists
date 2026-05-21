@@ -2,6 +2,7 @@ package io.github.xsirdon.mists.boundary;
 
 import io.github.xsirdon.mists.network.MistRadiusPayload;
 import io.github.xsirdon.mists.progression.LevelZBridge;
+import io.github.xsirdon.mists.progression.Tier;
 import io.github.xsirdon.mists.progression.TierTable;
 import io.github.xsirdon.mists.worldgen.MistsWorldData;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
@@ -17,6 +18,8 @@ public final class BoundarySystem {
 
     /** UUID → last-known radius. Used to detect transitions and animate the client. */
     private static final Map<UUID, Double> lastRadius = new HashMap<>();
+    /** UUID → last-known tier ordinal. Used to detect tier-unlock transitions. */
+    private static final Map<UUID, Integer> lastTier = new HashMap<>();
 
     public static void register() {
         ServerTickEvents.END_SERVER_TICK.register(server -> {
@@ -28,7 +31,8 @@ public final class BoundarySystem {
 
     private static void tickPlayer(ServerPlayerEntity player) {
         int level = LevelZBridge.readOverallLevel(player);
-        double radius = TierTable.levelToRadius(level);
+        Tier currentTier = TierTable.levelToTier(level);
+        double radius = TierTable.tierToRadius(currentTier);
 
         if (!(player.getWorld() instanceof ServerWorld serverWorld)) return;
         MistsWorldData data = MistsWorldData.get(serverWorld);
@@ -36,10 +40,15 @@ public final class BoundarySystem {
         double cz = data.spawnZ;
 
         Double prev = lastRadius.get(player.getUuid());
-        if (prev == null || Math.abs(prev - radius) > 0.001) {
+        Integer prevTier = lastTier.get(player.getUuid());
+        boolean radiusChanged = prev == null || Math.abs(prev - radius) > 0.001;
+        boolean tierChanged = prevTier == null || prevTier != currentTier.ordinal();
+
+        if (radiusChanged || tierChanged) {
             double from = prev == null ? radius : prev;
-            MistRadiusPayload.sendTo(player, radius, from, cx, cz);
+            MistRadiusPayload.sendTo(player, radius, from, cx, cz, currentTier.ordinal());
             lastRadius.put(player.getUuid(), radius);
+            lastTier.put(player.getUuid(), currentTier.ordinal());
         }
 
         Vec3d pos = player.getPos();

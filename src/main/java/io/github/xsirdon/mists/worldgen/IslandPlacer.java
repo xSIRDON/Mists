@@ -4,6 +4,7 @@ import com.mojang.datafixers.util.Pair;
 import io.github.xsirdon.mists.Mists;
 import io.github.xsirdon.mists.MistsConstants;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerWorldEvents;
+import net.minecraft.block.Block;
 import net.minecraft.block.Blocks;
 import net.minecraft.registry.entry.RegistryEntry;
 import net.minecraft.registry.tag.BiomeTags;
@@ -12,6 +13,7 @@ import net.minecraft.util.math.BlockPos;
 import net.minecraft.world.World;
 import net.minecraft.world.biome.Biome;
 
+import java.util.List;
 import java.util.Random;
 
 public final class IslandPlacer {
@@ -95,20 +97,133 @@ public final class IslandPlacer {
 
     private static void buildIsland(ServerWorld world, double cx, double cz, double radius, long shapeSeed) {
         IslandShape shape = new IslandShape(cx, cz, radius, shapeSeed);
+        int surfaceY = OceanCarver.SEA_LEVEL + 3;
         int from = (int) (-radius * 1.5);
         int to   = (int) ( radius * 1.5);
+        double beachThreshold = radius * 0.85;
+
         for (int dx = from; dx <= to; dx++) {
             for (int dz = from; dz <= to; dz++) {
                 int x = (int) cx + dx, z = (int) cz + dz;
                 if (shape.contains(x, z)) {
+                    double ddx = x - cx, ddz = z - cz;
+                    double dist = Math.sqrt(ddx * ddx + ddz * ddz);
                     for (int y = SpawnIsland.BASE_Y; y <= OceanCarver.SEA_LEVEL + 2; y++) {
                         world.setBlockState(new BlockPos(x, y, z),
                             Blocks.DIRT.getDefaultState(), 2);
                     }
-                    world.setBlockState(new BlockPos(x, OceanCarver.SEA_LEVEL + 3, z),
-                        Blocks.GRASS_BLOCK.getDefaultState(), 2);
+                    // Outer ~15% of radius → sand beach. Inner → grass.
+                    if (dist > beachThreshold) {
+                        world.setBlockState(new BlockPos(x, surfaceY, z),
+                            Blocks.SAND.getDefaultState(), 2);
+                    } else {
+                        world.setBlockState(new BlockPos(x, surfaceY, z),
+                            Blocks.GRASS_BLOCK.getDefaultState(), 2);
+                    }
                 }
             }
+        }
+
+        // Optional central hill bump for larger islands (≥ 25 radius). One extra grass block
+        // at center; scattered second-layer cells within R*0.25 with 30% probability.
+        if (radius > 25) {
+            Random hillRng = new Random(shapeSeed ^ 0xBADD1E5L);
+            double hillR = radius * 0.25;
+            for (int dx = -(int) hillR; dx <= (int) hillR; dx++) {
+                for (int dz = -(int) hillR; dz <= (int) hillR; dz++) {
+                    int x = (int) cx + dx, z = (int) cz + dz;
+                    if (dx * dx + dz * dz > hillR * hillR) continue;
+                    if (!world.getBlockState(new BlockPos(x, surfaceY, z)).isOf(Blocks.GRASS_BLOCK))
+                        continue;
+                    world.setBlockState(new BlockPos(x, surfaceY + 1, z),
+                        Blocks.GRASS_BLOCK.getDefaultState(), 2);
+                    if (hillRng.nextDouble() < 0.30) {
+                        world.setBlockState(new BlockPos(x, surfaceY + 2, z),
+                            Blocks.GRASS_BLOCK.getDefaultState(), 2);
+                    }
+                }
+            }
+        }
+
+        decorateRingIsland(world, (int) cx, (int) cz, radius, surfaceY, shapeSeed);
+    }
+
+    /**
+     * Decorate a ring island: 1-2 ponds (if R > 30), trees (~1 per 40 grass blocks²),
+     * tall grass / flowers (~1 per 25 grass blocks²). All seeded from {@code shapeSeed}
+     * so reloads produce identical scenery.
+     */
+    private static void decorateRingIsland(ServerWorld world, int cx, int cz, double radius,
+                                           int surfaceY, long shapeSeed) {
+        Random rng = new Random(shapeSeed ^ 0xDEC0DEL);
+        int searchRadius = (int) Math.ceil(radius) + 2;
+        // Re-scan to find the actual surface (post-hill); ring islands may have y = surfaceY or surfaceY+1.
+        // We decorate on the configured surfaceY (initial grass layer); plants on top of hill bumps
+        // would float, so collecting at the base surface keeps the plant placement valid.
+        List<int[]> grass = IslandDecoration.collectGrassSurface(
+            world, cx, cz, searchRadius, surfaceY);
+        if (grass.isEmpty()) return;
+
+        // 1. Ponds — 1 or 2 for R > 30.
+        if (radius > 30) {
+            int pondCount = 1 + (rng.nextInt(100) < 40 ? 1 : 0);
+            double coreR = radius * 0.5;
+            for (int p = 0; p < pondCount; p++) {
+                for (int attempt = 0; attempt < 12; attempt++) {
+                    double a = rng.nextDouble() * Math.PI * 2;
+                    double r = rng.nextDouble() * coreR;
+                    int px = cx + (int) Math.round(Math.cos(a) * r);
+                    int pz = cz + (int) Math.round(Math.sin(a) * r);
+                    if (world.getBlockState(new BlockPos(px, surfaceY, pz)).isOf(Blocks.GRASS_BLOCK)) {
+                        IslandDecoration.carvePond(world, px, pz, surfaceY);
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Recollect after pond carving.
+        grass = IslandDecoration.collectGrassSurface(world, cx, cz, searchRadius, surfaceY);
+        if (grass.isEmpty()) return;
+
+        // 2. Trees: ~1 per 40 blocks² of grass surface; min spacing ~4 blocks between trunks.
+        int treeCount = Math.max(0, grass.size() / 40);
+        scatterTrees(world, grass, rng, treeCount, surfaceY);
+
+        // Recollect — trees consumed grass cells (or at least their canopies shade them).
+        grass = IslandDecoration.collectGrassSurface(world, cx, cz, searchRadius, surfaceY);
+
+        // 3. Tall grass tufts: ~1 per 25 blocks² of grass surface.
+        Block tallGrass = IslandDecoration.tallGrassBlock();
+        int tufts = Math.max(1, grass.size() / 25);
+        IslandDecoration.scatterPlants(world, grass, rng, tufts, tallGrass, surfaceY, 1);
+
+        // 4. Dandelions (1 per 60) + poppies (1 per 90).
+        int dandelions = Math.max(0, grass.size() / 60);
+        IslandDecoration.scatterPlants(world, grass, rng, dandelions, Blocks.DANDELION, surfaceY, 4);
+        int poppies = Math.max(0, grass.size() / 90);
+        IslandDecoration.scatterPlants(world, grass, rng, poppies, Blocks.POPPY, surfaceY, 4);
+    }
+
+    private static void scatterTrees(ServerWorld world, List<int[]> candidates, Random rng,
+                                     int count, int surfaceY) {
+        if (candidates.isEmpty() || count <= 0) return;
+        java.util.List<int[]> placed = new java.util.ArrayList<>();
+        int attempts = 0;
+        int placedCount = 0;
+        int maxAttempts = count * 15;
+        while (placedCount < count && attempts < maxAttempts) {
+            attempts++;
+            int[] c = candidates.get(rng.nextInt(candidates.size()));
+            boolean tooClose = false;
+            for (int[] pp : placed) {
+                int ddx = pp[0] - c[0], ddz = pp[1] - c[1];
+                if (ddx * ddx + ddz * ddz < 16) { tooClose = true; break; }
+            }
+            if (tooClose) continue;
+            IslandDecoration.placeOak(world, c[0], c[1], surfaceY);
+            placed.add(c);
+            placedCount++;
         }
     }
 

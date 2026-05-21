@@ -1,6 +1,7 @@
 package io.github.xsirdon.mists.worldgen;
 
 import io.github.xsirdon.mists.Mists;
+import net.minecraft.block.Block;
 import net.minecraft.block.Blocks;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.util.math.BlockPos;
@@ -87,7 +88,58 @@ public final class SpawnIsland {
             }
         }
 
+        decorate(world, (int) cx, (int) cz, worldSeed);
+
         Mists.LOG.info("Mists: spawn island built at ({}, {})", (int) cx, (int) cz);
+    }
+
+    /**
+     * Post-terrain decoration pass: pond, tall grass, flowers, dirt patches.
+     * Seeded deterministically from {@code worldSeed ^ (cx * 31 + cz)} so a given seed
+     * yields the same scenery on world reloads.
+     */
+    private static void decorate(ServerWorld world, int cx, int cz, long worldSeed) {
+        Random rng = new Random(worldSeed ^ ((long) (cx * 31 + cz)));
+
+        // Collect available grass cells (the pond placement and dirt patches consume from this).
+        List<int[]> grass = IslandDecoration.collectGrassSurface(
+            world, cx, cz, (int) Math.ceil(SPAWN_ISLAND_RADIUS) + 2, SPAWN_Y);
+        if (grass.isEmpty()) return;
+
+        // 1. Single freshwater pond — deterministic position inside the core (≤ R*0.35).
+        double coreR = SPAWN_ISLAND_RADIUS * 0.35;
+        for (int attempt = 0; attempt < 16; attempt++) {
+            double a = rng.nextDouble() * Math.PI * 2;
+            double r = rng.nextDouble() * coreR;
+            int px = cx + (int) Math.round(Math.cos(a) * r);
+            int pz = cz + (int) Math.round(Math.sin(a) * r);
+            if (world.getBlockState(new BlockPos(px, SPAWN_Y, pz)).isOf(Blocks.GRASS_BLOCK)) {
+                IslandDecoration.carvePond(world, px, pz, SPAWN_Y);
+                break;
+            }
+        }
+
+        // 2. Dirt patches (3-6 of them, 2x2 each).
+        int patchCount = 3 + rng.nextInt(4); // 3..6
+        for (int i = 0; i < patchCount; i++) {
+            int[] c = grass.get(rng.nextInt(grass.size()));
+            IslandDecoration.dirtPatch(world, c[0], c[1], SPAWN_Y);
+        }
+
+        // Recollect grass cells — pond + dirt patches have shrunk the surface.
+        grass = IslandDecoration.collectGrassSurface(
+            world, cx, cz, (int) Math.ceil(SPAWN_ISLAND_RADIUS) + 2, SPAWN_Y);
+
+        // 3. Tall grass tufts (4-8).
+        Block tallGrass = IslandDecoration.tallGrassBlock();
+        int tufts = 4 + rng.nextInt(5); // 4..8
+        IslandDecoration.scatterPlants(world, grass, rng, tufts, tallGrass, SPAWN_Y, 1);
+
+        // 4. Dandelions (1-3) + poppies (0-2).
+        int dandelions = 1 + rng.nextInt(3); // 1..3
+        IslandDecoration.scatterPlants(world, grass, rng, dandelions, Blocks.DANDELION, SPAWN_Y, 4);
+        int poppies = rng.nextInt(3); // 0..2
+        IslandDecoration.scatterPlants(world, grass, rng, poppies, Blocks.POPPY, SPAWN_Y, 4);
     }
 
     private static int topGrassY(ServerWorld world, int x, int z) {

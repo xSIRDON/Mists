@@ -8,6 +8,10 @@ public final class MistState {
     public static volatile long   animationStartedAtMillis = 0L;
     public static volatile double centerX = 0.0;
     public static volatile double centerZ = 0.0;
+    /** Most recent tier ordinal received from the server (ONE=0..OPEN=4). */
+    public static volatile int    currentTier = 0;
+    /** The tier ordinal immediately prior to the last apply() — used by the UI to detect unlocks. */
+    public static volatile int    previousTier = 0;
     public static final  long     ANIMATION_DURATION_MS = 3_000L;
 
     public static double effectiveRadius() {
@@ -19,12 +23,19 @@ public final class MistState {
         return animationFromRadius + (currentRadius - animationFromRadius) * eased;
     }
 
-    public static void apply(double newRadius, double animateFrom, double cx, double cz) {
+    public static void apply(double newRadius, double animateFrom, double cx, double cz, int tierOrdinal) {
         animationFromRadius = animateFrom;
         currentRadius = newRadius;
         animationStartedAtMillis = System.currentTimeMillis();
         centerX = cx;
         centerZ = cz;
+        if (tierOrdinal > currentTier) {
+            previousTier = currentTier;
+            currentTier = tierOrdinal;
+        } else {
+            previousTier = currentTier;
+            currentTier = tierOrdinal;
+        }
     }
 
     private MistState() {}

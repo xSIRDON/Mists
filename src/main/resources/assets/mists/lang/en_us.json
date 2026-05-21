@@ -1,8 +1,12 @@
 {
   "mists.title": "Mists",
+  "mists.title.tier_2": "Tier 2 Unlocked",
+  "mists.title.tier_3": "Tier 3 Unlocked",
+  "mists.title.tier_4": "Tier 4 Unlocked",
+  "mists.title.tier_open": "The World Opens",
   "mists.toast.tier_unlocked": "The mist retreats…",
-  "mists.toast.tier_2": "Tier 2 unlocked — sail beyond.",
-  "mists.toast.tier_3": "Tier 3 unlocked — the world widens.",
-  "mists.toast.tier_4": "Tier 4 unlocked — the mainland nears.",
+  "mists.toast.tier_2": "Sail beyond.",
+  "mists.toast.tier_3": "The world widens.",
+  "mists.toast.tier_4": "The mainland nears.",
   "mists.toast.tier_open": "The mist is gone."
 }

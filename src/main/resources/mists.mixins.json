@@ -1,0 +1,10 @@
+{
+  "required": true,
+  "package": "io.github.xsirdon.mists.mixin",
+  "compatibilityLevel": "JAVA_17",
+  "minVersion": "0.8",
+  "client": [
+    "client.BackgroundRendererMixin"
+  ],
+  "injectors": { "defaultRequire": 1 }
+}
