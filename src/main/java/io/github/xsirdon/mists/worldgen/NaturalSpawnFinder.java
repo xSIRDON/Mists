@@ -42,11 +42,17 @@ public final class NaturalSpawnFinder {
     private static final int MAX_TOP_ABOVE_SEA = 14;
 
     /** Ring radii for the strict island test. */
-    private static final int INNER_RADIUS = 25;   // most must be land
-    private static final int MID_RADIUS   = 80;   // most must be ocean
-    private static final int OUTER_RADIUS = 250;  // almost all must be ocean
+    private static final int INNER_RADIUS  = 20;  // most must be land
+    private static final int MID_RADIUS    = 60;  // mostly ocean
+    private static final int OUTER_RADIUS  = 150; // ZERO land allowed at this ring or beyond
+    private static final int FAR_RADIUS    = 250; // ZERO land allowed
+    private static final int VERY_FAR_RADIUS = 400; // ZERO land allowed
 
-    private static final int SAMPLES_PER_RING = 8;
+    private static final int SAMPLES_PER_RING = 16; // 16 angles for precision
+
+    /** Maximum acceptable measured island extent (blocks). Anything larger means we picked
+     *  a continental coastline rather than a real island. */
+    private static final int MAX_ISLAND_RADIUS = 50;
 
     /** Offset start points for locateBiome sweeps. */
     private static final int[][] SEARCH_STARTS = {
@@ -85,43 +91,43 @@ public final class NaturalSpawnFinder {
         NoiseConfig noiseConfig = world.getChunkManager().getNoiseConfig();
         int seaLevel = world.getSeaLevel();
 
-        // Strategy 1: plains-family biome with strict island isolation.
+        // Strategy 1: plains-family biome, STRICT isolation (0 land at any of 3 far rings).
         Result plains = findIslandStrict(world, chunkGen, noiseConfig, seaLevel,
-            /*minOuterOcean*/ 7, /*minInnerLand*/ 6, /*minMidOcean*/ 5,
+            /*maxFarLand*/ 0, /*minInnerLand*/ 12, /*maxMidLand*/ 2,
             /*biomeFilter*/ NaturalSpawnFinder::isPlainsFamily);
         if (plains != null) {
-            log(plains, t0, "plains-family strict");
+            log(plains, t0, "plains-family STRICT");
             return plains;
         }
 
-        // Strategy 2: any habitable biome with strict isolation.
+        // Strategy 2: any habitable biome, strict isolation.
         Result strict = findIslandStrict(world, chunkGen, noiseConfig, seaLevel,
-            /*minOuterOcean*/ 7, /*minInnerLand*/ 6, /*minMidOcean*/ 5,
+            /*maxFarLand*/ 0, /*minInnerLand*/ 12, /*maxMidLand*/ 2,
             /*biomeFilter*/ NaturalSpawnFinder::isHabitableBiome);
         if (strict != null) {
-            log(strict, t0, "habitable strict");
+            log(strict, t0, "habitable STRICT");
             return strict;
         }
 
-        // Strategy 3: plains-family with lenient thresholds.
+        // Strategy 3: plains-family, slightly relaxed (allow 1 land at far rings, 4 at mid).
         Result plainsLenient = findIslandStrict(world, chunkGen, noiseConfig, seaLevel,
-            /*minOuterOcean*/ 5, /*minInnerLand*/ 4, /*minMidOcean*/ 3,
+            /*maxFarLand*/ 1, /*minInnerLand*/ 10, /*maxMidLand*/ 4,
             /*biomeFilter*/ NaturalSpawnFinder::isPlainsFamily);
         if (plainsLenient != null) {
             log(plainsLenient, t0, "plains-family lenient");
             return plainsLenient;
         }
 
-        // Strategy 4: any habitable, lenient.
+        // Strategy 4: any habitable, slightly relaxed.
         Result lenient = findIslandStrict(world, chunkGen, noiseConfig, seaLevel,
-            /*minOuterOcean*/ 5, /*minInnerLand*/ 4, /*minMidOcean*/ 3,
+            /*maxFarLand*/ 1, /*minInnerLand*/ 10, /*maxMidLand*/ 4,
             /*biomeFilter*/ NaturalSpawnFinder::isHabitableBiome);
         if (lenient != null) {
             log(lenient, t0, "habitable lenient");
             return lenient;
         }
 
-        Mists.LOG.warn("Mists: NaturalSpawnFinder found no candidates after {}ms — falling back to artificial generation",
+        Mists.LOG.warn("Mists: NaturalSpawnFinder found no isolated island after {}ms — falling back to artificial generation",
             System.currentTimeMillis() - t0);
         return null;
     }
@@ -155,7 +161,7 @@ public final class NaturalSpawnFinder {
                 break;
             }
         }
-        return Math.max(35, Math.min(150, lastLandRadius));
+        return Math.max(20, Math.min(MAX_ISLAND_RADIUS, lastLandRadius));
     }
 
     private static boolean isPlainsFamily(RegistryEntry<Biome> e) {
@@ -163,9 +169,20 @@ public final class NaturalSpawnFinder {
         return e.getKey().map(PLAINS_FAMILY::contains).orElse(false);
     }
 
+    /**
+     * Strict island detection: a position is only accepted as an island if at
+     * THREE far rings (150, 250, 400 blocks) ALL 16 cardinal-sample directions
+     * are ocean. Plus the inner 20 blocks must be land. Plus the measured island
+     * extent must be smaller than {@link #MAX_ISLAND_RADIUS} (otherwise it's a
+     * continent the locateBiome happened to land on the coast of).
+     *
+     * @param maxFarLand maximum allowed land samples at the three far rings (0 for strict, higher for lenient)
+     * @param minInnerLand minimum required land samples at INNER_RADIUS
+     * @param maxMidLand maximum allowed land samples at MID_RADIUS
+     */
     private static Result findIslandStrict(ServerWorld world, ChunkGenerator chunkGen,
                                             NoiseConfig noiseConfig, int seaLevel,
-                                            int minOuterOcean, int minInnerLand, int minMidOcean,
+                                            int maxFarLand, int minInnerLand, int maxMidLand,
                                             Predicate<RegistryEntry<Biome>> biomeFilter) {
         Result best = null;
 
@@ -180,20 +197,35 @@ public final class NaturalSpawnFinder {
             int aboveSea = topY - seaLevel;
             if (aboveSea < MIN_TOP_ABOVE_SEA || aboveSea > MAX_TOP_ABOVE_SEA) continue;
 
-            int innerLand = countLand(chunkGen, noiseConfig, world, pos.getX(), pos.getZ(), INNER_RADIUS, seaLevel);
-            int midOcean  = SAMPLES_PER_RING - countLand(chunkGen, noiseConfig, world, pos.getX(), pos.getZ(), MID_RADIUS, seaLevel);
-            int outerOcean = SAMPLES_PER_RING - countLand(chunkGen, noiseConfig, world, pos.getX(), pos.getZ(), OUTER_RADIUS, seaLevel);
+            // Rings, from inner to outer.
+            int innerLand   = countLand(chunkGen, noiseConfig, world, pos.getX(), pos.getZ(), INNER_RADIUS, seaLevel);
+            int midLand     = countLand(chunkGen, noiseConfig, world, pos.getX(), pos.getZ(), MID_RADIUS, seaLevel);
+            int outerLand   = countLand(chunkGen, noiseConfig, world, pos.getX(), pos.getZ(), OUTER_RADIUS, seaLevel);
+            int farLand     = countLand(chunkGen, noiseConfig, world, pos.getX(), pos.getZ(), FAR_RADIUS, seaLevel);
+            int veryFarLand = countLand(chunkGen, noiseConfig, world, pos.getX(), pos.getZ(), VERY_FAR_RADIUS, seaLevel);
 
-            if (innerLand  < minInnerLand)  continue;
-            if (midOcean   < minMidOcean)   continue;
-            if (outerOcean < minOuterOcean) continue;
+            if (innerLand  < minInnerLand)           continue;
+            if (midLand    > maxMidLand)             continue;
+            if (outerLand  > maxFarLand)             continue;
+            if (farLand    > maxFarLand)             continue;
+            if (veryFarLand > maxFarLand + 1)        continue; // very-far gets +1 tolerance
 
-            // Score combines: high inner-land + high outer-ocean = good island.
-            int score = innerLand * 100 + midOcean * 100 + outerOcean * 200;
-            long d = (long) pos.getX() * pos.getX() + (long) pos.getZ() * pos.getZ();
+            // Final check: measure the actual extent of the island. If it's wider than
+            // MAX_ISLAND_RADIUS, it's a continent we happened to sample the edge of.
+            int extent = measureIslandExtent(world, pos.getX(), pos.getZ());
+            if (extent > MAX_ISLAND_RADIUS) continue;
+
+            // Score: high inner-land + low far-land + small extent = great island.
+            int score = innerLand * 100
+                       + (SAMPLES_PER_RING - outerLand) * 50
+                       + (SAMPLES_PER_RING - farLand) * 100
+                       + (SAMPLES_PER_RING - veryFarLand) * 50
+                       + (MAX_ISLAND_RADIUS - extent) * 20;
+
             if (best == null || score > best.score) {
                 best = new Result(new BlockPos(pos.getX(), topY, pos.getZ()), score, r.getSecond(),
-                    String.format("habitable inner=%d/8 mid_ocean=%d/8 outer_ocean=%d/8", innerLand, midOcean, outerOcean));
+                    String.format("inner=%d/16 mid=%d/16 outer=%d/16 far=%d/16 vfar=%d/16 extent=%d",
+                        innerLand, midLand, outerLand, farLand, veryFarLand, extent));
             }
         }
         return best;
