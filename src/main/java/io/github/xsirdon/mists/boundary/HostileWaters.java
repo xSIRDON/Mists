@@ -1,7 +1,6 @@
 package io.github.xsirdon.mists.boundary;
 
 import io.github.xsirdon.mists.MistsConstants;
-import net.minecraft.entity.damage.DamageSource;
 import net.minecraft.entity.effect.StatusEffectInstance;
 import net.minecraft.entity.effect.StatusEffects;
 import net.minecraft.server.network.ServerPlayerEntity;
@@ -11,8 +10,9 @@ public final class HostileWaters {
     /** Re-applied every tick — short durations keep the effect tightly bound to the band. */
     private static final int EFFECT_DURATION_TICKS = 40; // 2 seconds
 
-    public static void applyDebuffs(ServerPlayerEntity player, double x, double z, double radius) {
-        double d = BoundaryMath.distanceFromSpawn(x, z);
+    public static void applyDebuffs(ServerPlayerEntity player, double x, double z,
+                                    double cx, double cz, double radius) {
+        double d = BoundaryMath.distanceFromCenter(x, z, cx, cz);
         double wallInner = radius - MistsConstants.HARD_WALL_INSET;
         double hostileInner = wallInner - MistsConstants.HOSTILE_BAND_THICKNESS;
         if (d < hostileInner) return;

@@ -1,12 +1,16 @@
 package io.github.xsirdon.mists.worldgen;
 
+import com.mojang.datafixers.util.Pair;
 import io.github.xsirdon.mists.Mists;
 import io.github.xsirdon.mists.MistsConstants;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerWorldEvents;
 import net.minecraft.block.Blocks;
+import net.minecraft.registry.entry.RegistryEntry;
+import net.minecraft.registry.tag.BiomeTags;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.world.World;
+import net.minecraft.world.biome.Biome;
 
 import java.util.Random;
 
@@ -27,12 +31,36 @@ public final class IslandPlacer {
         long seed = world.getSeed();
         Random rng = new Random(seed ^ 0x4D49535453L);  // "MISTS" as bytes
 
-        SpawnIsland.build(world, seed);
-        data.islands.add(new MistsWorldData.IslandRecord(1, 0, 0, SpawnIsland.SPAWN_ISLAND_RADIUS, seed));
+        // Locate the nearest ocean biome (any variant) to host the spawn island.
+        Pair<BlockPos, RegistryEntry<Biome>> result = world.locateBiome(
+            biomeEntry -> biomeEntry.isIn(BiomeTags.IS_OCEAN),
+            new BlockPos(0, 64, 0),
+            2000,   // horizontal radius (blocks)
+            32,     // horizontalBlockCheckInterval
+            64      // verticalBlockCheckInterval
+        );
 
-        placeRing(world, data, rng, 2, MistsConstants.TIER_2_RADIUS,  6 * 16,  16 * 16);
-        placeRing(world, data, rng, 3, MistsConstants.TIER_3_RADIUS, 10 * 16,  28 * 16);
-        placeRing(world, data, rng, 4, MistsConstants.TIER_4_RADIUS, 16 * 16,  48 * 16);
+        if (result == null) {
+            Mists.LOG.warn("Mists: no ocean biome found within 2000 blocks of (0,0); falling back to (0,0)");
+            data.spawnX = 0.0;
+            data.spawnZ = 0.0;
+        } else {
+            BlockPos found = result.getFirst();
+            data.spawnX = found.getX();
+            data.spawnZ = found.getZ();
+            Mists.LOG.info("Mists: spawn island anchor located at ({}, {})", (int) data.spawnX, (int) data.spawnZ);
+        }
+
+        SpawnIsland.build(world, data.spawnX, data.spawnZ, seed);
+        data.islands.add(new MistsWorldData.IslandRecord(
+            1, data.spawnX, data.spawnZ, SpawnIsland.SPAWN_ISLAND_RADIUS, seed));
+
+        // Move the world spawn to the new center.
+        world.setSpawnPos(new BlockPos((int) data.spawnX, SpawnIsland.SPAWN_Y + 1, (int) data.spawnZ), 0f);
+
+        placeRing(world, data, rng, data.spawnX, data.spawnZ, 2, MistsConstants.TIER_2_RADIUS,  6 * 16,  16 * 16);
+        placeRing(world, data, rng, data.spawnX, data.spawnZ, 3, MistsConstants.TIER_3_RADIUS, 10 * 16,  28 * 16);
+        placeRing(world, data, rng, data.spawnX, data.spawnZ, 4, MistsConstants.TIER_4_RADIUS, 16 * 16,  48 * 16);
 
         // v0.1: Inter-island ocean carve is DISABLED. Doing ~12M synchronous block updates
         // during world load froze the server thread. Players will see natural vanilla land
@@ -43,6 +71,7 @@ public final class IslandPlacer {
     }
 
     private static void placeRing(ServerWorld world, MistsWorldData data, Random rng,
+                                  double centerX, double centerZ,
                                   int tier, double ringRadius, int minArea, int maxArea) {
         int count = 3 + rng.nextInt(3);  // 3–5
         double angleStep = (Math.PI * 2) / count;
@@ -52,8 +81,8 @@ public final class IslandPlacer {
         for (int i = 0; i < count; i++) {
             double angle = baseAngle + i * angleStep + (rng.nextDouble() - 0.5) * angleJitter;
             double r = ringRadius + (rng.nextDouble() - 0.5) * 80.0;
-            double cx = Math.cos(angle) * r;
-            double cz = Math.sin(angle) * r;
+            double cx = centerX + Math.cos(angle) * r;
+            double cz = centerZ + Math.sin(angle) * r;
 
             int area = minArea + rng.nextInt(maxArea - minArea + 1);
             double islandRadius = Math.sqrt(area / Math.PI);
@@ -81,26 +110,6 @@ public final class IslandPlacer {
                 }
             }
         }
-    }
-
-    /** Inside the ring zone, any land block above sea level not part of a placed island is drowned. */
-    private static void carveOcean(ServerWorld world, MistsWorldData data, int radius) {
-        for (int x = -radius; x <= radius; x++) {
-            for (int z = -radius; z <= radius; z++) {
-                double d = Math.sqrt((double) x * x + (double) z * z);
-                if (d > radius) continue;
-                if (isInsideAnyIsland(data, x, z)) continue;
-                OceanCarver.carveColumnToOcean(world, x, z);
-            }
-        }
-    }
-
-    private static boolean isInsideAnyIsland(MistsWorldData data, int x, int z) {
-        for (MistsWorldData.IslandRecord r : data.islands) {
-            double dx = x - r.cx, dz = z - r.cz;
-            if (dx * dx + dz * dz <= (r.radius * 1.05) * (r.radius * 1.05)) return true;
-        }
-        return false;
     }
 
     private IslandPlacer() {}

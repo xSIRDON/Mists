@@ -6,6 +6,8 @@ public final class MistState {
     public static volatile double currentRadius = Double.POSITIVE_INFINITY;
     public static volatile double animationFromRadius = Double.POSITIVE_INFINITY;
     public static volatile long   animationStartedAtMillis = 0L;
+    public static volatile double centerX = 0.0;
+    public static volatile double centerZ = 0.0;
     public static final  long     ANIMATION_DURATION_MS = 3_000L;
 
     public static double effectiveRadius() {
@@ -17,10 +19,12 @@ public final class MistState {
         return animationFromRadius + (currentRadius - animationFromRadius) * eased;
     }
 
-    public static void apply(double newRadius, double animateFrom) {
+    public static void apply(double newRadius, double animateFrom, double cx, double cz) {
         animationFromRadius = animateFrom;
         currentRadius = newRadius;
         animationStartedAtMillis = System.currentTimeMillis();
+        centerX = cx;
+        centerZ = cz;
     }
 
     private MistState() {}

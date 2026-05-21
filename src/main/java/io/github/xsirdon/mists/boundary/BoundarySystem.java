@@ -1,10 +1,11 @@
 package io.github.xsirdon.mists.boundary;
 
-import io.github.xsirdon.mists.MistsConstants;
 import io.github.xsirdon.mists.network.MistRadiusPayload;
 import io.github.xsirdon.mists.progression.LevelZBridge;
 import io.github.xsirdon.mists.progression.TierTable;
+import io.github.xsirdon.mists.worldgen.MistsWorldData;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
+import net.minecraft.server.world.ServerWorld;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.util.math.Vec3d;
 
@@ -29,25 +30,30 @@ public final class BoundarySystem {
         int level = LevelZBridge.readOverallLevel(player);
         double radius = TierTable.levelToRadius(level);
 
+        if (!(player.getWorld() instanceof ServerWorld serverWorld)) return;
+        MistsWorldData data = MistsWorldData.get(serverWorld);
+        double cx = data.spawnX;
+        double cz = data.spawnZ;
+
         Double prev = lastRadius.get(player.getUuid());
         if (prev == null || Math.abs(prev - radius) > 0.001) {
             double from = prev == null ? radius : prev;
-            MistRadiusPayload.sendTo(player, radius, from);
+            MistRadiusPayload.sendTo(player, radius, from, cx, cz);
             lastRadius.put(player.getUuid(), radius);
         }
 
         Vec3d pos = player.getPos();
-        BoundaryBand band = BoundaryMath.classify(pos.x, pos.z, radius);
+        BoundaryBand band = BoundaryMath.classify(pos.x, pos.z, cx, cz, radius);
         switch (band) {
-            case HOSTILE -> HostileWaters.applyDebuffs(player, pos.x, pos.z, radius);
-            case WALL, VISUAL, BEYOND -> hardClamp(player, radius);
+            case HOSTILE -> HostileWaters.applyDebuffs(player, pos.x, pos.z, cx, cz, radius);
+            case WALL, VISUAL, BEYOND -> hardClamp(player, cx, cz, radius);
             default -> {}
         }
     }
 
-    private static void hardClamp(ServerPlayerEntity player, double radius) {
+    private static void hardClamp(ServerPlayerEntity player, double cx, double cz, double radius) {
         Vec3d pos = player.getPos();
-        double[] clamped = BoundaryMath.clampToWall(pos.x, pos.z, radius);
+        double[] clamped = BoundaryMath.clampToWall(pos.x, pos.z, cx, cz, radius);
         // Preserve y; cancel outward velocity.
         Vec3d v = player.getVelocity();
         double dx = clamped[0] - pos.x;

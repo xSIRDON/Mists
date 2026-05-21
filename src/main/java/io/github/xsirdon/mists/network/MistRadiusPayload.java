@@ -9,29 +9,38 @@ import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 public final class MistRadiusPayload {
     public final double radius;
     public final double animateFromRadius;   // same as radius if no animation desired
+    public final double centerX;
+    public final double centerZ;
 
-    public MistRadiusPayload(double radius, double animateFromRadius) {
+    public MistRadiusPayload(double radius, double animateFromRadius, double centerX, double centerZ) {
         this.radius = radius;
         this.animateFromRadius = animateFromRadius;
+        this.centerX = centerX;
+        this.centerZ = centerZ;
     }
 
     public static MistRadiusPayload decode(PacketByteBuf buf) {
         double r  = buf.readDouble();
         double af = buf.readDouble();
-        return new MistRadiusPayload(r, af);
+        double cx = buf.readDouble();
+        double cz = buf.readDouble();
+        return new MistRadiusPayload(r, af, cx, cz);
     }
 
     public PacketByteBuf encode() {
         PacketByteBuf buf = PacketByteBufs.create();
         buf.writeDouble(radius);
         buf.writeDouble(animateFromRadius);
+        buf.writeDouble(centerX);
+        buf.writeDouble(centerZ);
         return buf;
     }
 
-    public static void sendTo(ServerPlayerEntity player, double radius, double animateFromRadius) {
+    public static void sendTo(ServerPlayerEntity player, double radius, double animateFromRadius,
+                              double centerX, double centerZ) {
         ServerPlayNetworking.send(player, MistsConstants.MIST_RADIUS_PACKET,
-            new MistRadiusPayload(radius, animateFromRadius).encode());
+            new MistRadiusPayload(radius, animateFromRadius, centerX, centerZ).encode());
     }
 
-    private MistRadiusPayload() { this(0, 0); }
+    private MistRadiusPayload() { this(0, 0, 0, 0); }
 }

@@ -14,7 +14,7 @@ public final class MistsClient implements ClientModInitializer {
             MistsConstants.MIST_RADIUS_PACKET,
             (client, handler, buf, sender) -> {
                 MistRadiusPayload p = MistRadiusPayload.decode(buf);
-                client.execute(() -> MistState.apply(p.radius, p.animateFromRadius));
+                client.execute(() -> MistState.apply(p.radius, p.animateFromRadius, p.centerX, p.centerZ));
             });
         MistRenderer.register();
     }

@@ -24,15 +24,19 @@ public final class MistRenderer {
         double radius = MistState.effectiveRadius();
         if (!Double.isFinite(radius) || radius > 25_000) return;
 
+        double cx = MistState.centerX;
+        double cz = MistState.centerZ;
         Vec3d pos = player.getPos();
-        double playerAngle = Math.atan2(pos.z, pos.x);
+        double dx = pos.x - cx;
+        double dz = pos.z - cz;
+        double playerAngle = Math.atan2(dz, dx);
         // Only spawn arc particles within ±60° of the player's view direction from spawn.
         double arcHalf = Math.toRadians(60);
         int slices = 24;
         for (int i = -slices; i <= slices; i++) {
             double a = playerAngle + (i / (double) slices) * arcHalf;
-            double x = Math.cos(a) * radius;
-            double z = Math.sin(a) * radius;
+            double x = cx + Math.cos(a) * radius;
+            double z = cz + Math.sin(a) * radius;
             // Three vertical bands: low, mid, high — purely for visual depth.
             for (double dy : new double[]{ 56, 70, 90 }) {
                 if (Math.random() > 0.35) continue;
