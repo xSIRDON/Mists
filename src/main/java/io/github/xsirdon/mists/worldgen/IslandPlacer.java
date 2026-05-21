@@ -3,7 +3,7 @@ package io.github.xsirdon.mists.worldgen;
 import com.mojang.datafixers.util.Pair;
 import io.github.xsirdon.mists.Mists;
 import io.github.xsirdon.mists.MistsConstants;
-import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerWorldEvents;
 import net.minecraft.block.Block;
 import net.minecraft.block.Blocks;
 import net.minecraft.registry.entry.RegistryEntry;
@@ -20,42 +20,16 @@ import java.util.function.Predicate;
 
 public final class IslandPlacer {
 
-    /** Number of ticks to wait at server start before our placement runs. Gives other mods
-     *  (Enhanced Celestials in particular) time to finish their PersistentState init —
-     *  EC has a known empty-forecast crash if its tick fires while we're loading a chunk
-     *  storm during world startup. */
-    private static final int PLACEMENT_DELAY_TICKS = 60;
-
-    /** Per-server tick counter. Reset on each server start. */
-    private static int ticksSinceStart = 0;
-    /** Set once placement has run for this server, so we don't repeatedly try. */
-    private static boolean placementDone = false;
-
     public static void register() {
-        ServerTickEvents.END_SERVER_TICK.register(server -> {
-            if (placementDone) return;
-            ticksSinceStart++;
-            if (ticksSinceStart < PLACEMENT_DELAY_TICKS) return;
-
-            ServerWorld world = server.getOverworld();
-            if (world == null) return;
-
+        // v0.7: back to load-time placement. The EC empty-forecast crash is now suppressed
+        // by EnhancedCelestialsForecastFixMixin, so we no longer need to dance around it.
+        ServerWorldEvents.LOAD.register((server, world) -> {
+            if (world.getRegistryKey() != World.OVERWORLD) return;
             MistsWorldData data = MistsWorldData.get(world);
-            if (data.placed) {
-                placementDone = true;
-                return;
-            }
-
+            if (data.placed) return;
             place(world, data);
             data.placed = true;
             data.markDirty();
-            placementDone = true;
-        });
-
-        // Reset counters when a new server starts (e.g., reopen world in single-player).
-        net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents.SERVER_STOPPED.register(server -> {
-            ticksSinceStart = 0;
-            placementDone = false;
         });
     }
 
@@ -105,28 +79,13 @@ public final class IslandPlacer {
         // Move the world spawn to the new center.
         world.setSpawnPos(new BlockPos((int) data.spawnX, SpawnIsland.SPAWN_Y + 1, (int) data.spawnZ), 0f);
 
-        // v0.6: Ring placement DISABLED. The chunk-load storm at tier 2/3/4 radii was
-        // racing with Enhanced Celestials' lunar-forecast init and triggering its
-        // "Forecast cannot be empty" crash. Spawn island only for now; rings come back
-        // in v0.7 with paced multi-tick placement that won't blast EC's init.
-        //
-        // placeRing(world, data, rng, data.spawnX, data.spawnZ, 2, MistsConstants.TIER_2_RADIUS,  6 * 16,  16 * 16);
-        // placeRing(world, data, rng, data.spawnX, data.spawnZ, 3, MistsConstants.TIER_3_RADIUS, 10 * 16,  28 * 16);
-        // placeRing(world, data, rng, data.spawnX, data.spawnZ, 4, MistsConstants.TIER_4_RADIUS, 16 * 16,  48 * 16);
+        // v0.7: Ring placement RE-ENABLED. The EC empty-forecast crash that motivated us
+        // to disable this in v0.6 is now suppressed by EnhancedCelestialsForecastFixMixin.
+        placeRing(world, data, rng, data.spawnX, data.spawnZ, 2, MistsConstants.TIER_2_RADIUS,  6 * 16,  16 * 16);
+        placeRing(world, data, rng, data.spawnX, data.spawnZ, 3, MistsConstants.TIER_3_RADIUS, 10 * 16,  28 * 16);
+        placeRing(world, data, rng, data.spawnX, data.spawnZ, 4, MistsConstants.TIER_4_RADIUS, 16 * 16,  48 * 16);
 
-        // Reference rng so the unused-warning lint stays quiet — it'll be used when rings re-enable.
-        rng.nextInt();
-
-        // If players already joined during the 60-tick delay, teleport them to the freshly
-        // built spawn island — they were sitting on natural terrain until now.
-        double safeY = SpawnIsland.SPAWN_Y + 2;
-        for (net.minecraft.server.network.ServerPlayerEntity player : world.getServer().getPlayerManager().getPlayerList()) {
-            if (player.getServerWorld() == world) {
-                player.requestTeleport(data.spawnX, safeY, data.spawnZ);
-            }
-        }
-
-        Mists.LOG.info("Mists: spawn island placed ({} island, ring placement deferred to v0.7)", data.islands.size());
+        Mists.LOG.info("Mists: archipelago placement complete ({} islands)", data.islands.size());
     }
 
     private static void placeRing(ServerWorld world, MistsWorldData data, Random rng,
