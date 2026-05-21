@@ -1,6 +1,7 @@
 package io.github.xsirdon.mists.progression;
 
 import io.github.xsirdon.mists.Mists;
+import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.server.network.ServerPlayerEntity;
 
 import java.lang.reflect.Method;
@@ -45,8 +46,9 @@ public final class LevelZBridge {
             try {
                 Class<?> iface  = Class.forName("net.levelz.access.PlayerStatsManagerAccess");
                 Class<?> mgrCls = Class.forName("net.levelz.stats.PlayerStatsManager");
-                Method get = iface.getMethod("getPlayerStatsManager",
-                                              Class.forName("net.minecraft.entity.player.PlayerEntity"));
+                // Use PlayerEntity.class (NOT Class.forName) so the reference gets
+                // remapped from yarn (dev) to intermediary (production) by Loom.
+                Method get = iface.getMethod("getPlayerStatsManager", PlayerEntity.class);
                 Method lvl = mgrCls.getMethod("getOverallLevel");
                 accessIface = iface;
                 getStatsManager = get;
