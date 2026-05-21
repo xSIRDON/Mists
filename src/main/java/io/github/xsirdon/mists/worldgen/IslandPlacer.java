@@ -2,10 +2,7 @@ package io.github.xsirdon.mists.worldgen;
 
 import com.mojang.datafixers.util.Pair;
 import io.github.xsirdon.mists.Mists;
-import io.github.xsirdon.mists.MistsConstants;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerWorldEvents;
-import net.minecraft.block.Block;
-import net.minecraft.block.Blocks;
 import net.minecraft.registry.entry.RegistryEntry;
 import net.minecraft.registry.tag.BiomeTags;
 import net.minecraft.server.world.ServerWorld;
@@ -16,7 +13,6 @@ import net.minecraft.world.biome.BiomeKeys;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Random;
 import java.util.function.Predicate;
 
 public final class IslandPlacer {
@@ -119,103 +115,51 @@ public final class IslandPlacer {
         return oceanCount * 100 / totalChecks;
     }
 
-    /** True if a candidate (cx, cz) sits in ocean — used by ring placement to skip
-     *  slots that fall on natural land. */
-    private static boolean isOceanAt(ServerWorld world, double cx, double cz) {
-        return ANY_OCEAN.test(world.getBiome(
-            new BlockPos((int) cx, world.getSeaLevel(), (int) cz)));
-    }
-
     private static void place(ServerWorld world, MistsWorldData data) {
         long seed = world.getSeed();
-        Random rng = new Random(seed ^ 0x4D49535453L);  // "MISTS" as bytes
 
-        // Locate genuinely open ocean (lots of ocean in every direction, not just an
-        // ocean biome adjacent to coastline).
-        BlockPos found = findOpenOcean(world);
+        // ── v0.11: Prefer a NATURAL island from the seed's terrain ────────────
+        // ChunkGenerator.getHeight samples the noise function directly so we can
+        // survey thousands of candidate positions without loading any chunks.
+        // We pick the best-scoring "small isolated landmass" and set spawn there.
+        // No block placement happens at all — the actual island is whatever
+        // vanilla worldgen + biome surface rules + carvers produce. Caves spawn.
+        // Ores spawn. Trees grow per the biome. It's the seed's island.
+        NaturalSpawnFinder.Result natural = NaturalSpawnFinder.find(world);
 
-        if (found == null) {
-            Mists.LOG.warn("Mists: no ocean candidate located; falling back to (0,0). Spawn may sit on natural terrain.");
-            data.spawnX = 0.0;
-            data.spawnZ = 0.0;
+        if (natural != null) {
+            data.spawnX = natural.pos.getX();
+            data.spawnZ = natural.pos.getZ();
+            BlockPos spawnPos = natural.pos.up();
+            world.setSpawnPos(spawnPos, 0f);
+            data.islands.add(new MistsWorldData.IslandRecord(
+                1, data.spawnX, data.spawnZ, 28.0, seed));
+            Mists.LOG.info("Mists: using natural island at ({}, {}) — no artificial generation",
+                (int) data.spawnX, (int) data.spawnZ);
         } else {
-            data.spawnX = found.getX();
-            data.spawnZ = found.getZ();
-            Mists.LOG.info("Mists: spawn island anchor at ({}, {})", (int) data.spawnX, (int) data.spawnZ);
-        }
-
-        // SpawnIsland.build now handles setSpawnPos internally using the correct top y.
-        SpawnIsland.build(world, data.spawnX, data.spawnZ, seed);
-        data.islands.add(new MistsWorldData.IslandRecord(
-            1, data.spawnX, data.spawnZ, SpawnIsland.SPAWN_ISLAND_RADIUS, seed));
-
-        // Ring islands: still placed, but each slot is checked for "is this ocean?"
-        // before building. Slots that fall on natural land are skipped — no more
-        // synthetic grass patches embedded in vanilla forests.
-        placeRing(world, data, rng, data.spawnX, data.spawnZ, 2, MistsConstants.TIER_2_RADIUS,  6 * 16,  16 * 16);
-        placeRing(world, data, rng, data.spawnX, data.spawnZ, 3, MistsConstants.TIER_3_RADIUS, 10 * 16,  28 * 16);
-        placeRing(world, data, rng, data.spawnX, data.spawnZ, 4, MistsConstants.TIER_4_RADIUS, 16 * 16,  48 * 16);
-
-        Mists.LOG.info("Mists: archipelago placement complete ({} islands)", data.islands.size());
-    }
-
-    private static void placeRing(ServerWorld world, MistsWorldData data, Random rng,
-                                  double centerX, double centerZ,
-                                  int tier, double ringRadius, int minArea, int maxArea) {
-        int count = 3 + rng.nextInt(3);  // 3–5
-        double angleStep = (Math.PI * 2) / count;
-        double angleJitter = angleStep * 0.4;
-        double baseAngle = rng.nextDouble() * Math.PI * 2;
-
-        for (int i = 0; i < count; i++) {
-            double angle = baseAngle + i * angleStep + (rng.nextDouble() - 0.5) * angleJitter;
-            double r = ringRadius + (rng.nextDouble() - 0.5) * 80.0;
-            double cx = centerX + Math.cos(angle) * r;
-            double cz = centerZ + Math.sin(angle) * r;
-
-            int area = minArea + rng.nextInt(maxArea - minArea + 1);
-            double islandRadius = Math.sqrt(area / Math.PI);
-            long shapeSeed = rng.nextLong();
-
-            // Skip ring slots that fall on natural land — placing a synthetic island
-            // on top of a forest looks awful. The mist boundary still gates progression
-            // regardless of whether a tier-N island exists in every slot.
-            if (!isOceanAt(world, cx, cz)) {
-                Mists.LOG.info("Mists: skipping tier {} slot at ({}, {}) — not ocean", tier, (int) cx, (int) cz);
-                continue;
+            // ── Fallback: no natural island found, build an artificial one ────
+            Mists.LOG.warn("Mists: no suitable natural island in the seed; falling back to artificial generation.");
+            BlockPos found = findOpenOcean(world);
+            if (found == null) {
+                data.spawnX = 0.0;
+                data.spawnZ = 0.0;
+                Mists.LOG.warn("Mists: no open ocean found either; falling back to (0,0).");
+            } else {
+                data.spawnX = found.getX();
+                data.spawnZ = found.getZ();
             }
-
-            buildIsland(world, cx, cz, islandRadius, shapeSeed);
-            data.islands.add(new MistsWorldData.IslandRecord(tier, cx, cz, islandRadius, shapeSeed));
+            SpawnIsland.build(world, data.spawnX, data.spawnZ, seed);
+            data.islands.add(new MistsWorldData.IslandRecord(
+                1, data.spawnX, data.spawnZ, SpawnIsland.SPAWN_ISLAND_RADIUS, seed));
         }
-    }
 
-    private static void buildIsland(ServerWorld world, double cx, double cz, double radius, long shapeSeed) {
-        // Scale max height with island size, like vanilla beach islands —
-        // a tiny island is ~2 blocks high, a huge island is ~7 blocks high.
-        int maxHeight = (int) Math.max(2, Math.min(7, radius / 8.0 + 1));
-        // Wider islands need more aggressive edge taper so they don't end abruptly.
-        double edgeBias = 1.5;
+        // ── Ring placement DISABLED for v0.11 ─────────────────────────────────
+        // Focus is entirely on getting the spawn island to feel like natural
+        // Minecraft terrain. Rings will return in v0.12 once we figure out how
+        // to find natural islands at fixed radii from spawn (or accept that
+        // they'll be vanilla "whatever the seed put at this distance" terrain).
 
-        NaturalIslandBuilder.Result result = NaturalIslandBuilder.build(
-            world, cx, cz, radius, maxHeight, edgeBias, shapeSeed, shapeSeed);
-
-        // Tree count proportional to grass area (~ 1 oak per 50 blocks² of grass surface).
-        Random rng = new Random(shapeSeed ^ 0xDEC0DEL);
-        int treeCount = Math.max(2, result.coreTops().size() / 50);
-        NaturalIslandBuilder.scatterOaks(world, result.coreTops(), treeCount, 5, rng);
-
-        // Flora proportional to grass area.
-        int grassSize = result.grassTops().size();
-        int tufts = Math.max(2, grassSize / 25);
-        int dandelions = Math.max(0, grassSize / 60);
-        int poppies = Math.max(0, grassSize / 90);
-        NaturalIslandBuilder.scatterFlora(world, result.grassTops(), rng,
-            tufts, IslandDecoration.tallGrassBlock().getDefaultState(), 1);
-        NaturalIslandBuilder.scatterFlora(world, result.grassTops(), rng,
-            dandelions, Blocks.DANDELION.getDefaultState(), 4);
-        NaturalIslandBuilder.scatterFlora(world, result.grassTops(), rng,
-            poppies, Blocks.POPPY.getDefaultState(), 4);
+        Mists.LOG.info("Mists: spawn placement complete ({} record)", data.islands.size());
     }
 
     private IslandPlacer() {}
