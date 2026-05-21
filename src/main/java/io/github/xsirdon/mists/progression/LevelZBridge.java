@@ -1,7 +1,6 @@
 package io.github.xsirdon.mists.progression;
 
 import io.github.xsirdon.mists.Mists;
-import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.server.network.ServerPlayerEntity;
 
 import java.lang.reflect.Method;
@@ -9,14 +8,26 @@ import java.lang.reflect.Method;
 /**
  * Reads a player's LevelZ total/overall level by reflection.
  *
- * LevelZ adds a duck interface {@code net.levelz.access.PlayerStatsManagerAccess}
- * to {@code PlayerEntity}, with method
- * {@code PlayerStatsManager getPlayerStatsManager(PlayerEntity)}.
- * That manager exposes {@code int getOverallLevel()}.
+ * The True Survival fork of LevelZ exposes a duck-typed interface
+ * {@code net.levelz.access.PlayerStatsManagerAccess} on PlayerEntity with a
+ * no-argument {@code getPlayerStatsManager()} method. That manager exposes a
+ * public field {@code int overallLevel} as well as a getter
+ * {@code int getOverallLevel()}. We use the getter.
  *
- * We resolve both classes lazily and cache the methods. If LevelZ is missing
- * (it shouldn't be — it's a required dep), we log once and return 0 so the
- * player is treated as Tier 1.
+ * Signatures verified via {@code javap} against {@code levelz-true-survival-1.4.13.jar}:
+ * <pre>
+ *   public interface PlayerStatsManagerAccess {
+ *     public abstract PlayerStatsManager getPlayerStatsManager();
+ *   }
+ *   public class PlayerStatsManager {
+ *     public int overallLevel;
+ *     public int getOverallLevel();
+ *     ...
+ *   }
+ * </pre>
+ *
+ * If LevelZ is missing or has a different signature, we log once and return 0
+ * so the player is treated as Tier 1.
  */
 public final class LevelZBridge {
 
@@ -30,7 +41,7 @@ public final class LevelZBridge {
         if (accessIface == null) return 0;
         try {
             if (!accessIface.isInstance(player)) return 0;
-            Object mgr = getStatsManager.invoke(player, player);
+            Object mgr = getStatsManager.invoke(player);
             return (int) getOverallLevel.invoke(mgr);
         } catch (ReflectiveOperationException e) {
             Mists.LOG.warn("LevelZBridge: reflective level read failed", e);
@@ -46,9 +57,7 @@ public final class LevelZBridge {
             try {
                 Class<?> iface  = Class.forName("net.levelz.access.PlayerStatsManagerAccess");
                 Class<?> mgrCls = Class.forName("net.levelz.stats.PlayerStatsManager");
-                // Use PlayerEntity.class (NOT Class.forName) so the reference gets
-                // remapped from yarn (dev) to intermediary (production) by Loom.
-                Method get = iface.getMethod("getPlayerStatsManager", PlayerEntity.class);
+                Method get = iface.getMethod("getPlayerStatsManager");
                 Method lvl = mgrCls.getMethod("getOverallLevel");
                 accessIface = iface;
                 getStatsManager = get;

@@ -16,22 +16,35 @@ public final class SpawnIsland {
     public static final int    SPAWN_Y = 65;                  // top of island
     public static final int    BASE_Y  = 60;
 
+    /** Radius of the visible ocean around the spawn island. Carve happens out to this radius
+     *  in a CIRCLE (not a square) so the player sees a round body of water, not a rectangle. */
+    public static final int OCEAN_RING_RADIUS = 80;
+
+    /** Top of the air-clear column. Any natural terrain at or below SKY_CLEAR_Y is replaced
+     *  with air on cells inside the island, so spawn isn't buried under a mountain. */
+    public static final int SKY_CLEAR_Y = 120;
+
     public static void build(ServerWorld world, double cx, double cz, long worldSeed) {
         IslandShape shape = new IslandShape(cx, cz, SPAWN_ISLAND_RADIUS, worldSeed);
-        int xFrom = (int) Math.floor(cx - 45);
-        int xTo   = (int) Math.ceil (cx + 45);
-        int zFrom = (int) Math.floor(cz - 45);
-        int zTo   = (int) Math.ceil (cz + 45);
+        // Iterate a square enclosing the ocean disc, but only act on cells inside the disc.
+        int xFrom = (int) Math.floor(cx - OCEAN_RING_RADIUS);
+        int xTo   = (int) Math.ceil (cx + OCEAN_RING_RADIUS);
+        int zFrom = (int) Math.floor(cz - OCEAN_RING_RADIUS);
+        int zTo   = (int) Math.ceil (cz + OCEAN_RING_RADIUS);
 
         double beachThreshold = SPAWN_ISLAND_RADIUS * 0.85;
         double hillThreshold  = SPAWN_ISLAND_RADIUS * 0.4;
+        long oceanR2 = (long) OCEAN_RING_RADIUS * OCEAN_RING_RADIUS;
         List<int[]> hillCells = new ArrayList<>();
 
         for (int x = xFrom; x <= xTo; x++) {
             for (int z = zFrom; z <= zTo; z++) {
+                double ddx = x - cx, ddz = z - cz;
+                double d2 = ddx * ddx + ddz * ddz;
+                if (d2 > oceanR2) continue; // outside the round ocean ring — leave natural terrain
+
                 if (shape.contains(x, z)) {
-                    double ddx = x - cx, ddz = z - cz;
-                    double dist = Math.sqrt(ddx * ddx + ddz * ddz);
+                    double dist = Math.sqrt(d2);
 
                     // Fill column with dirt up to SPAWN_Y - 1
                     for (int y = BASE_Y; y <= SPAWN_Y - 1; y++) {
@@ -56,6 +69,12 @@ public final class SpawnIsland {
                             }
                             hillCells.add(new int[]{ x, z });
                         }
+                    }
+
+                    // Clear any natural terrain ABOVE the island so spawn isn't buried under
+                    // a mountain when the locate-biome fallback put us inland.
+                    for (int y = SPAWN_Y + 3; y <= SKY_CLEAR_Y; y++) {
+                        world.setBlockState(new BlockPos(x, y, z), Blocks.AIR.getDefaultState(), 2);
                     }
                 } else {
                     OceanCarver.carveColumnToOcean(world, x, z);

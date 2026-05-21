@@ -2,6 +2,7 @@ package io.github.xsirdon.mists;
 
 import io.github.xsirdon.mists.boundary.BoundarySystem;
 import io.github.xsirdon.mists.boundary.PearlClamp;
+import io.github.xsirdon.mists.boundary.PlayerJoinClamp;
 import io.github.xsirdon.mists.boundary.VehicleClamp;
 import io.github.xsirdon.mists.worldgen.IslandPlacer;
 import net.fabricmc.api.ModInitializer;
@@ -16,6 +17,7 @@ public final class Mists implements ModInitializer {
         BoundarySystem.register();
         PearlClamp.register();
         VehicleClamp.register();
+        PlayerJoinClamp.register();
         IslandPlacer.register();
     }
 }

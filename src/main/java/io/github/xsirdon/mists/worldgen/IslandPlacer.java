@@ -12,9 +12,11 @@ import net.minecraft.server.world.ServerWorld;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.world.World;
 import net.minecraft.world.biome.Biome;
+import net.minecraft.world.biome.BiomeKeys;
 
 import java.util.List;
 import java.util.Random;
+import java.util.function.Predicate;
 
 public final class IslandPlacer {
 
@@ -23,10 +25,37 @@ public final class IslandPlacer {
             if (world.getRegistryKey() != World.OVERWORLD) return;
             MistsWorldData data = MistsWorldData.get(world);
             if (data.placed) return;
-            place(world, data);
-            data.placed = true;
-            data.markDirty();
+            // Defer to the next server tick so other mods (Enhanced Celestials, etc.) finish
+            // initialising their PersistentState before we modify the world. Running our
+            // blockset storm during ServerWorldEvents.LOAD races against their init.
+            server.execute(() -> {
+                if (data.placed) return; // re-check; another tick might have raced us
+                place(world, data);
+                data.placed = true;
+                data.markDirty();
+            });
         });
+    }
+
+    /** Try several ocean predicates in order, returning the first match or null. */
+    private static Pair<BlockPos, RegistryEntry<Biome>> findOcean(ServerWorld world, BlockPos start) {
+        Predicate<RegistryEntry<Biome>> primary = e -> e.isIn(BiomeTags.IS_OCEAN);
+        Pair<BlockPos, RegistryEntry<Biome>> r = world.locateBiome(primary, start, 4000, 32, 64);
+        if (r != null) return r;
+
+        // Fallback: match explicit ocean biome keys in case the IS_OCEAN tag was stripped
+        // by datapack/biome-modification mods.
+        Predicate<RegistryEntry<Biome>> keys = e ->
+            e.matchesKey(BiomeKeys.OCEAN)              ||
+            e.matchesKey(BiomeKeys.DEEP_OCEAN)         ||
+            e.matchesKey(BiomeKeys.WARM_OCEAN)         ||
+            e.matchesKey(BiomeKeys.COLD_OCEAN)         ||
+            e.matchesKey(BiomeKeys.LUKEWARM_OCEAN)     ||
+            e.matchesKey(BiomeKeys.FROZEN_OCEAN)       ||
+            e.matchesKey(BiomeKeys.DEEP_COLD_OCEAN)    ||
+            e.matchesKey(BiomeKeys.DEEP_LUKEWARM_OCEAN)||
+            e.matchesKey(BiomeKeys.DEEP_FROZEN_OCEAN);
+        return world.locateBiome(keys, start, 4000, 32, 64);
     }
 
     private static void place(ServerWorld world, MistsWorldData data) {
@@ -34,16 +63,10 @@ public final class IslandPlacer {
         Random rng = new Random(seed ^ 0x4D49535453L);  // "MISTS" as bytes
 
         // Locate the nearest ocean biome (any variant) to host the spawn island.
-        Pair<BlockPos, RegistryEntry<Biome>> result = world.locateBiome(
-            biomeEntry -> biomeEntry.isIn(BiomeTags.IS_OCEAN),
-            new BlockPos(0, 64, 0),
-            2000,   // horizontal radius (blocks)
-            32,     // horizontalBlockCheckInterval
-            64      // verticalBlockCheckInterval
-        );
+        Pair<BlockPos, RegistryEntry<Biome>> result = findOcean(world, new BlockPos(0, 64, 0));
 
         if (result == null) {
-            Mists.LOG.warn("Mists: no ocean biome found within 2000 blocks of (0,0); falling back to (0,0)");
+            Mists.LOG.warn("Mists: no ocean biome found within 4000 blocks; falling back to (0,0) — spawn will sit on natural terrain with a forced ocean ring");
             data.spawnX = 0.0;
             data.spawnZ = 0.0;
         } else {
