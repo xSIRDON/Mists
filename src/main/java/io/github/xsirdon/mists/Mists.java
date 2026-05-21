@@ -1,5 +1,6 @@
 package io.github.xsirdon.mists;
 
+import io.github.xsirdon.mists.boundary.BoundarySystem;
 import net.fabricmc.api.ModInitializer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -9,10 +10,6 @@ public final class Mists implements ModInitializer {
 
     @Override public void onInitialize() {
         LOG.info("Mists initialising (server/common)");
-        // Subsystem registrations are added in later tasks:
-        //   - worldgen/IslandPlacer.register()
-        //   - boundary/BoundarySystem.register()
-        //   - boundary/PearlClamp.register()
-        //   - network packet codec registration
+        BoundarySystem.register();
     }
 }
