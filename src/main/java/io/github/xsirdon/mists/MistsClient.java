@@ -1,5 +1,6 @@
 package io.github.xsirdon.mists;
 
+import io.github.xsirdon.mists.client.MistRenderer;
 import io.github.xsirdon.mists.client.MistState;
 import io.github.xsirdon.mists.network.MistRadiusPayload;
 import net.fabricmc.api.ClientModInitializer;
@@ -15,5 +16,6 @@ public final class MistsClient implements ClientModInitializer {
                 MistRadiusPayload p = MistRadiusPayload.decode(buf);
                 client.execute(() -> MistState.apply(p.radius, p.animateFromRadius));
             });
+        MistRenderer.register();
     }
 }
