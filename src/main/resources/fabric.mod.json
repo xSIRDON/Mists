@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "mists",
+  "version": "${version}",
+  "name": "Mists",
+  "description": "World-progression mod for maark's True Survival modpack. Mist boundary that retreats with LevelZ progression.",
+  "authors": ["xSIRDON"],
+  "contact": { "homepage": "https://github.com/xSIRDON/Mists", "sources": "https://github.com/xSIRDON/Mists" },
+  "license": "MIT",
+  "environment": "*",
+  "entrypoints": {
+    "main":   ["io.github.xsirdon.mists.Mists"],
+    "client": ["io.github.xsirdon.mists.MistsClient"]
+  },
+  "depends": {
+    "fabricloader": ">=0.16.0",
+    "minecraft": "~1.20.1",
+    "java": ">=17",
+    "fabric-api": "*",
+    "levelz": "*"
+  }
+}
