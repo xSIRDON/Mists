@@ -132,10 +132,16 @@ public final class IslandPlacer {
             data.spawnZ = natural.pos.getZ();
             BlockPos spawnPos = natural.pos.up();
             world.setSpawnPos(spawnPos, 0f);
-            data.islands.add(new MistsWorldData.IslandRecord(
-                1, data.spawnX, data.spawnZ, 28.0, seed));
-            Mists.LOG.info("Mists: using natural island at ({}, {}) — no artificial generation",
+
+            // Measure the actual island extent so the tier-1 mist wraps the island
+            // closely. ~25 blocks of ocean buffer past the island edge.
+            int islandRadius = NaturalSpawnFinder.measureIslandExtent(world,
                 (int) data.spawnX, (int) data.spawnZ);
+            data.tier1RadiusOverride = islandRadius + 25;
+            data.islands.add(new MistsWorldData.IslandRecord(
+                1, data.spawnX, data.spawnZ, islandRadius, seed));
+            Mists.LOG.info("Mists: using natural island at ({}, {}) — measured radius {}, tier1 mist {}",
+                (int) data.spawnX, (int) data.spawnZ, islandRadius, (int) data.tier1RadiusOverride);
         } else {
             // ── Fallback: no natural island found, build an artificial one ────
             Mists.LOG.warn("Mists: no suitable natural island in the seed; falling back to artificial generation.");
@@ -149,6 +155,8 @@ public final class IslandPlacer {
                 data.spawnZ = found.getZ();
             }
             SpawnIsland.build(world, data.spawnX, data.spawnZ, seed);
+            // Artificial island has a known radius; tier 1 mist wraps it + buffer.
+            data.tier1RadiusOverride = SpawnIsland.SPAWN_ISLAND_RADIUS + 25;
             data.islands.add(new MistsWorldData.IslandRecord(
                 1, data.spawnX, data.spawnZ, SpawnIsland.SPAWN_ISLAND_RADIUS, seed));
         }

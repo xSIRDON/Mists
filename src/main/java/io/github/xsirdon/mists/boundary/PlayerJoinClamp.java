@@ -29,7 +29,7 @@ public final class PlayerJoinClamp {
             double cx = data.spawnX;
             double cz = data.spawnZ;
             int level = LevelZBridge.readOverallLevel(player);
-            double radius = TierTable.levelToRadius(level);
+            double radius = TierTable.levelToRadius(level, data);
 
             double dx = player.getX() - cx;
             double dz = player.getZ() - cz;

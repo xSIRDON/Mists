@@ -32,12 +32,12 @@ public final class BoundarySystem {
     private static void tickPlayer(ServerPlayerEntity player) {
         int level = LevelZBridge.readOverallLevel(player);
         Tier currentTier = TierTable.levelToTier(level);
-        double radius = TierTable.tierToRadius(currentTier);
 
         if (!(player.getWorld() instanceof ServerWorld serverWorld)) return;
         MistsWorldData data = MistsWorldData.get(serverWorld);
         double cx = data.spawnX;
         double cz = data.spawnZ;
+        double radius = TierTable.tierToRadius(currentTier, data);
 
         Double prev = lastRadius.get(player.getUuid());
         Integer prevTier = lastTier.get(player.getUuid());

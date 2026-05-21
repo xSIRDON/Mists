@@ -24,9 +24,9 @@ public final class VehicleClamp {
                     }
                 }
                 if (lowest == Integer.MAX_VALUE) continue;
-                double radius = TierTable.levelToRadius(lowest);
                 if (!(player.getWorld() instanceof ServerWorld serverWorld)) continue;
                 MistsWorldData data = MistsWorldData.get(serverWorld);
+                double radius = TierTable.levelToRadius(lowest, data);
                 double cx = data.spawnX;
                 double cz = data.spawnZ;
                 Vec3d pos = vehicle.getPos();

@@ -15,10 +15,9 @@ public final class PearlClamp {
             if (!(entity instanceof EnderPearlEntity pearl)) return;
             if (!(pearl.getOwner() instanceof ServerPlayerEntity player)) return;
             int level = LevelZBridge.readOverallLevel(player);
-            double radius = TierTable.levelToRadius(level);
-
             ServerWorld serverWorld = (ServerWorld) world;
             MistsWorldData data = MistsWorldData.get(serverWorld);
+            double radius = TierTable.levelToRadius(level, data);
             double cx = data.spawnX;
             double cz = data.spawnZ;
 

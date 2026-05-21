@@ -12,6 +12,7 @@ import net.minecraft.world.biome.BiomeKeys;
 import net.minecraft.world.gen.chunk.ChunkGenerator;
 import net.minecraft.world.gen.noise.NoiseConfig;
 
+import java.util.Set;
 import java.util.function.Predicate;
 
 /**
@@ -66,32 +67,57 @@ public final class NaturalSpawnFinder {
         }
     }
 
+    /** Per user request: skip mushroom_fields and prefer plains-family biomes. */
+    private static final Set<net.minecraft.registry.RegistryKey<Biome>> PLAINS_FAMILY = Set.of(
+        BiomeKeys.PLAINS,
+        BiomeKeys.SUNFLOWER_PLAINS,
+        BiomeKeys.MEADOW,
+        BiomeKeys.BEACH,
+        BiomeKeys.SAVANNA,
+        BiomeKeys.FOREST,
+        BiomeKeys.FLOWER_FOREST,
+        BiomeKeys.BIRCH_FOREST
+    );
+
     public static Result find(ServerWorld world) {
         long t0 = System.currentTimeMillis();
         ChunkGenerator chunkGen = world.getChunkManager().getChunkGenerator();
         NoiseConfig noiseConfig = world.getChunkManager().getNoiseConfig();
         int seaLevel = world.getSeaLevel();
 
-        // Strategy 1: locate MUSHROOM_FIELDS — vanilla-guaranteed island biome.
-        Result mush = findMushroomIsland(world, chunkGen, noiseConfig, seaLevel);
-        if (mush != null) {
-            log(mush, t0, "mushroom_fields");
-            return mush;
+        // Strategy 1: plains-family biome with strict island isolation.
+        Result plains = findIslandStrict(world, chunkGen, noiseConfig, seaLevel,
+            /*minOuterOcean*/ 7, /*minInnerLand*/ 6, /*minMidOcean*/ 5,
+            /*biomeFilter*/ NaturalSpawnFinder::isPlainsFamily);
+        if (plains != null) {
+            log(plains, t0, "plains-family strict");
+            return plains;
         }
 
-        // Strategy 2: strict scoring on habitable biomes.
+        // Strategy 2: any habitable biome with strict isolation.
         Result strict = findIslandStrict(world, chunkGen, noiseConfig, seaLevel,
-            /*minOuterOcean*/ 7, /*minInnerLand*/ 6, /*minMidOcean*/ 5);
+            /*minOuterOcean*/ 7, /*minInnerLand*/ 6, /*minMidOcean*/ 5,
+            /*biomeFilter*/ NaturalSpawnFinder::isHabitableBiome);
         if (strict != null) {
-            log(strict, t0, "strict habitable");
+            log(strict, t0, "habitable strict");
             return strict;
         }
 
-        // Strategy 3: lenient scoring.
+        // Strategy 3: plains-family with lenient thresholds.
+        Result plainsLenient = findIslandStrict(world, chunkGen, noiseConfig, seaLevel,
+            /*minOuterOcean*/ 5, /*minInnerLand*/ 4, /*minMidOcean*/ 3,
+            /*biomeFilter*/ NaturalSpawnFinder::isPlainsFamily);
+        if (plainsLenient != null) {
+            log(plainsLenient, t0, "plains-family lenient");
+            return plainsLenient;
+        }
+
+        // Strategy 4: any habitable, lenient.
         Result lenient = findIslandStrict(world, chunkGen, noiseConfig, seaLevel,
-            /*minOuterOcean*/ 5, /*minInnerLand*/ 4, /*minMidOcean*/ 3);
+            /*minOuterOcean*/ 5, /*minInnerLand*/ 4, /*minMidOcean*/ 3,
+            /*biomeFilter*/ NaturalSpawnFinder::isHabitableBiome);
         if (lenient != null) {
-            log(lenient, t0, "lenient habitable");
+            log(lenient, t0, "habitable lenient");
             return lenient;
         }
 
@@ -100,55 +126,52 @@ public final class NaturalSpawnFinder {
         return null;
     }
 
-    // ─────────────────────────────────────────────────────────────────────────────
-    // Strategy 1: mushroom fields
-    // ─────────────────────────────────────────────────────────────────────────────
-
-    private static Result findMushroomIsland(ServerWorld world, ChunkGenerator chunkGen,
-                                              NoiseConfig noiseConfig, int seaLevel) {
-        // Mushroom fields are rare, so search wide (up to 12000 blocks) with a coarse step.
-        int[][] starts = {
-            { 0, 0 }, { 4000, 0 }, { -4000, 0 }, { 0, 4000 }, { 0, -4000 },
-            { 4000, 4000 }, { -4000, -4000 }
-        };
-        Predicate<RegistryEntry<Biome>> isMushroom = e -> e.matchesKey(BiomeKeys.MUSHROOM_FIELDS);
-        BlockPos best = null;
-        long bestDist = Long.MAX_VALUE;
-        RegistryEntry<Biome> bestBiome = null;
-        for (int[] off : starts) {
-            BlockPos start = new BlockPos(off[0], seaLevel, off[1]);
-            Pair<BlockPos, RegistryEntry<Biome>> r = world.locateBiome(isMushroom, start, 6000, 128, 64);
-            if (r == null) continue;
-            BlockPos pos = r.getFirst();
-            long d = (long) pos.getX() * pos.getX() + (long) pos.getZ() * pos.getZ();
-            if (d < bestDist) {
-                best = pos;
-                bestDist = d;
-                bestBiome = r.getSecond();
+    /**
+     * Measure the actual extent of the natural island around the given centre.
+     * Sample outward radially until we hit mostly ocean — that's where the island ends.
+     * Returns a radius in blocks (capped to a sane range so the boundary isn't absurd).
+     */
+    public static int measureIslandExtent(ServerWorld world, int cx, int cz) {
+        ChunkGenerator chunkGen = world.getChunkManager().getChunkGenerator();
+        NoiseConfig noiseConfig = world.getChunkManager().getNoiseConfig();
+        int seaLevel = world.getSeaLevel();
+        int lastLandRadius = 10;
+        for (int r = 10; r <= 200; r += 5) {
+            int landCount = 0;
+            int samples = 12;
+            for (int a = 0; a < samples; a++) {
+                double angle = a * (2.0 * Math.PI / samples);
+                int sx = cx + (int) (Math.cos(angle) * r);
+                int sz = cz + (int) (Math.sin(angle) * r);
+                int top = chunkGen.getHeight(sx, sz,
+                    Heightmap.Type.WORLD_SURFACE_WG, world, noiseConfig);
+                if (top > seaLevel) landCount++;
+            }
+            double landRatio = landCount / (double) samples;
+            if (landRatio >= 0.25) {
+                lastLandRadius = r;
+            } else {
+                // 75%+ ocean at this radius — past the island edge.
+                break;
             }
         }
-        if (best == null) return null;
-        int topY = chunkGen.getHeight(best.getX(), best.getZ(),
-            Heightmap.Type.WORLD_SURFACE_WG, world, noiseConfig);
-        // Mushroom fields are always above sea level. Sanity check anyway.
-        if (topY < seaLevel + MIN_TOP_ABOVE_SEA) return null;
-        return new Result(new BlockPos(best.getX(), topY, best.getZ()),
-            /*score*/ 9999, bestBiome, "mushroom_fields");
+        return Math.max(35, Math.min(150, lastLandRadius));
     }
 
-    // ─────────────────────────────────────────────────────────────────────────────
-    // Strategy 2 / 3: habitable biome with island verification
-    // ─────────────────────────────────────────────────────────────────────────────
+    private static boolean isPlainsFamily(RegistryEntry<Biome> e) {
+        if (!isHabitableBiome(e)) return false;
+        return e.getKey().map(PLAINS_FAMILY::contains).orElse(false);
+    }
 
     private static Result findIslandStrict(ServerWorld world, ChunkGenerator chunkGen,
                                             NoiseConfig noiseConfig, int seaLevel,
-                                            int minOuterOcean, int minInnerLand, int minMidOcean) {
-        Predicate<RegistryEntry<Biome>> habitable = NaturalSpawnFinder::isHabitableBiome;
+                                            int minOuterOcean, int minInnerLand, int minMidOcean,
+                                            Predicate<RegistryEntry<Biome>> biomeFilter) {
         Result best = null;
 
         for (int[] off : SEARCH_STARTS) {
             BlockPos start = new BlockPos(off[0], seaLevel, off[1]);
-            Pair<BlockPos, RegistryEntry<Biome>> r = world.locateBiome(habitable, start, 1500, 64, 64);
+            Pair<BlockPos, RegistryEntry<Biome>> r = world.locateBiome(biomeFilter, start, 1500, 64, 64);
             if (r == null) continue;
 
             BlockPos pos = r.getFirst();
