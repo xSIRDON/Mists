@@ -1,6 +1,8 @@
 package io.github.xsirdon.mists;
 
 import io.github.xsirdon.mists.boundary.BoundarySystem;
+import io.github.xsirdon.mists.boundary.PearlClamp;
+import io.github.xsirdon.mists.boundary.VehicleClamp;
 import net.fabricmc.api.ModInitializer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -11,5 +13,7 @@ public final class Mists implements ModInitializer {
     @Override public void onInitialize() {
         LOG.info("Mists initialising (server/common)");
         BoundarySystem.register();
+        PearlClamp.register();
+        VehicleClamp.register();
     }
 }
