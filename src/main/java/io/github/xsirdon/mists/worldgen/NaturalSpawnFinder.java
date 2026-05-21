@@ -8,6 +8,7 @@ import net.minecraft.server.world.ServerWorld;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.world.Heightmap;
 import net.minecraft.world.biome.Biome;
+import net.minecraft.world.biome.BiomeKeys;
 import net.minecraft.world.gen.chunk.ChunkGenerator;
 import net.minecraft.world.gen.noise.NoiseConfig;
 
@@ -16,61 +17,52 @@ import java.util.function.Predicate;
 /**
  * Finds a small, isolated, naturally-generated island in the world's seed.
  *
- * <p>v0.11.1 strategy (fast): use {@link ServerWorld#locateBiome} to harvest
- * habitable biome candidates from multiple offset start points, then verify
- * each with a small set of {@link ChunkGenerator#getHeight} samples. The
- * previous version did a grid scan with ~10,000 height calls and blocked the
- * server thread for minutes; this version does ~13 locateBiome calls and
- * ~32 height samples per surviving candidate (well under 1000 total ops).
+ * <p>v0.11.2 strategy: try increasingly broad fallbacks until something usable
+ * is found.
  *
- * <p>Scoring components per candidate:
- * <ul>
- *   <li><b>islandness</b> — fraction of inner-ring cells that are land</li>
- *   <li><b>isolation</b> — fraction of outer-ring cells that are ocean</li>
- * </ul>
- *
- * <p>Final score = islandness × isolation (0..10000). Candidates with score
- * below {@link #MIN_ACCEPTED_SCORE} are rejected and we fall back to the
- * artificial NaturalIslandBuilder.
+ * <ol>
+ *   <li><b>MUSHROOM_FIELDS</b> — vanilla guarantees this biome only generates as
+ *       isolated ocean islands. If found anywhere in 12000 blocks of origin, we
+ *       use it. Aesthetic is mycelium + giant mushrooms, but it's a real island.</li>
+ *   <li><b>STRICT habitable</b> — locateBiome on any habitable biome (plains,
+ *       forest, beach, jungle, savanna, taiga). For each candidate, sample
+ *       8 cardinal directions at radius <b>250</b> — require 7/8 to be ocean.
+ *       Also check radius 80 (most must be ocean) and a small inner ring
+ *       (mostly land). This catches small isolated islands but rejects
+ *       continental land.</li>
+ *   <li><b>LENIENT habitable</b> — relaxed thresholds for the "no perfect island
+ *       in this seed" case. Outer ring 5/8 ocean.</li>
+ *   <li><b>null</b> — caller falls back to artificial NaturalIslandBuilder.</li>
+ * </ol>
  */
 public final class NaturalSpawnFinder {
 
     private static final int MIN_TOP_ABOVE_SEA = 1;
-    private static final int MAX_TOP_ABOVE_SEA = 12;
+    private static final int MAX_TOP_ABOVE_SEA = 14;
 
-    /** Sample radii for scoring (blocks from candidate centre). */
-    private static final int INNER_RADIUS = 28;
-    private static final int OUTER_RADIUS = 96;
+    /** Ring radii for the strict island test. */
+    private static final int INNER_RADIUS = 25;   // most must be land
+    private static final int MID_RADIUS   = 80;   // most must be ocean
+    private static final int OUTER_RADIUS = 250;  // almost all must be ocean
 
-    /** Number of sample angles per ring. 4 rings × this = total samples. */
-    private static final int ANGLES_PER_RING = 8;
+    private static final int SAMPLES_PER_RING = 8;
 
-    private static final int MIN_ACCEPTED_SCORE = 1500;
-
-    /** Offset start points for locateBiome. We sweep this 13-point pattern so
-     *  the seed's various habitable regions are all explored. */
+    /** Offset start points for locateBiome sweeps. */
     private static final int[][] SEARCH_STARTS = {
         {     0,     0 },
         {  1000,     0 }, { -1000,     0 }, {     0,  1000 }, {     0, -1000 },
         {  1500,  1500 }, { -1500, -1500 }, {  1500, -1500 }, { -1500,  1500 },
-        {  2500,     0 }, { -2500,     0 }, {     0,  2500 }, {     0, -2500 }
+        {  2500,     0 }, { -2500,     0 }, {     0,  2500 }, {     0, -2500 },
+        {  3500,  3500 }, { -3500, -3500 }, {  3500, -3500 }, { -3500,  3500 }
     };
-
-    /** Per-start locateBiome search radius. */
-    private static final int LOCATE_RADIUS = 1500;
 
     public static final class Result {
         public final BlockPos pos;
         public final int score;
-        public final int islandness;
-        public final int isolation;
         public final RegistryEntry<Biome> biome;
-        Result(BlockPos pos, int score, int islandness, int isolation, RegistryEntry<Biome> biome) {
-            this.pos = pos;
-            this.score = score;
-            this.islandness = islandness;
-            this.isolation = isolation;
-            this.biome = biome;
+        public final String strategy;
+        Result(BlockPos pos, int score, RegistryEntry<Biome> biome, String strategy) {
+            this.pos = pos; this.score = score; this.biome = biome; this.strategy = strategy;
         }
     }
 
@@ -79,17 +71,85 @@ public final class NaturalSpawnFinder {
         ChunkGenerator chunkGen = world.getChunkManager().getChunkGenerator();
         NoiseConfig noiseConfig = world.getChunkManager().getNoiseConfig();
         int seaLevel = world.getSeaLevel();
-        Predicate<RegistryEntry<Biome>> habitable = NaturalSpawnFinder::isHabitableBiome;
 
+        // Strategy 1: locate MUSHROOM_FIELDS — vanilla-guaranteed island biome.
+        Result mush = findMushroomIsland(world, chunkGen, noiseConfig, seaLevel);
+        if (mush != null) {
+            log(mush, t0, "mushroom_fields");
+            return mush;
+        }
+
+        // Strategy 2: strict scoring on habitable biomes.
+        Result strict = findIslandStrict(world, chunkGen, noiseConfig, seaLevel,
+            /*minOuterOcean*/ 7, /*minInnerLand*/ 6, /*minMidOcean*/ 5);
+        if (strict != null) {
+            log(strict, t0, "strict habitable");
+            return strict;
+        }
+
+        // Strategy 3: lenient scoring.
+        Result lenient = findIslandStrict(world, chunkGen, noiseConfig, seaLevel,
+            /*minOuterOcean*/ 5, /*minInnerLand*/ 4, /*minMidOcean*/ 3);
+        if (lenient != null) {
+            log(lenient, t0, "lenient habitable");
+            return lenient;
+        }
+
+        Mists.LOG.warn("Mists: NaturalSpawnFinder found no candidates after {}ms — falling back to artificial generation",
+            System.currentTimeMillis() - t0);
+        return null;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // Strategy 1: mushroom fields
+    // ─────────────────────────────────────────────────────────────────────────────
+
+    private static Result findMushroomIsland(ServerWorld world, ChunkGenerator chunkGen,
+                                              NoiseConfig noiseConfig, int seaLevel) {
+        // Mushroom fields are rare, so search wide (up to 12000 blocks) with a coarse step.
+        int[][] starts = {
+            { 0, 0 }, { 4000, 0 }, { -4000, 0 }, { 0, 4000 }, { 0, -4000 },
+            { 4000, 4000 }, { -4000, -4000 }
+        };
+        Predicate<RegistryEntry<Biome>> isMushroom = e -> e.matchesKey(BiomeKeys.MUSHROOM_FIELDS);
+        BlockPos best = null;
+        long bestDist = Long.MAX_VALUE;
+        RegistryEntry<Biome> bestBiome = null;
+        for (int[] off : starts) {
+            BlockPos start = new BlockPos(off[0], seaLevel, off[1]);
+            Pair<BlockPos, RegistryEntry<Biome>> r = world.locateBiome(isMushroom, start, 6000, 128, 64);
+            if (r == null) continue;
+            BlockPos pos = r.getFirst();
+            long d = (long) pos.getX() * pos.getX() + (long) pos.getZ() * pos.getZ();
+            if (d < bestDist) {
+                best = pos;
+                bestDist = d;
+                bestBiome = r.getSecond();
+            }
+        }
+        if (best == null) return null;
+        int topY = chunkGen.getHeight(best.getX(), best.getZ(),
+            Heightmap.Type.WORLD_SURFACE_WG, world, noiseConfig);
+        // Mushroom fields are always above sea level. Sanity check anyway.
+        if (topY < seaLevel + MIN_TOP_ABOVE_SEA) return null;
+        return new Result(new BlockPos(best.getX(), topY, best.getZ()),
+            /*score*/ 9999, bestBiome, "mushroom_fields");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // Strategy 2 / 3: habitable biome with island verification
+    // ─────────────────────────────────────────────────────────────────────────────
+
+    private static Result findIslandStrict(ServerWorld world, ChunkGenerator chunkGen,
+                                            NoiseConfig noiseConfig, int seaLevel,
+                                            int minOuterOcean, int minInnerLand, int minMidOcean) {
+        Predicate<RegistryEntry<Biome>> habitable = NaturalSpawnFinder::isHabitableBiome;
         Result best = null;
-        int candidatesConsidered = 0;
-        int candidatesScored = 0;
 
         for (int[] off : SEARCH_STARTS) {
             BlockPos start = new BlockPos(off[0], seaLevel, off[1]);
-            Pair<BlockPos, RegistryEntry<Biome>> r = world.locateBiome(habitable, start, LOCATE_RADIUS, 64, 64);
+            Pair<BlockPos, RegistryEntry<Biome>> r = world.locateBiome(habitable, start, 1500, 64, 64);
             if (r == null) continue;
-            candidatesConsidered++;
 
             BlockPos pos = r.getFirst();
             int topY = chunkGen.getHeight(pos.getX(), pos.getZ(),
@@ -97,76 +157,43 @@ public final class NaturalSpawnFinder {
             int aboveSea = topY - seaLevel;
             if (aboveSea < MIN_TOP_ABOVE_SEA || aboveSea > MAX_TOP_ABOVE_SEA) continue;
 
-            int[] components = scoreCandidate(chunkGen, noiseConfig, world,
-                pos.getX(), pos.getZ(), seaLevel);
-            int islandness = components[0];
-            int isolation = components[1];
-            int score = islandness * isolation;
-            candidatesScored++;
+            int innerLand = countLand(chunkGen, noiseConfig, world, pos.getX(), pos.getZ(), INNER_RADIUS, seaLevel);
+            int midOcean  = SAMPLES_PER_RING - countLand(chunkGen, noiseConfig, world, pos.getX(), pos.getZ(), MID_RADIUS, seaLevel);
+            int outerOcean = SAMPLES_PER_RING - countLand(chunkGen, noiseConfig, world, pos.getX(), pos.getZ(), OUTER_RADIUS, seaLevel);
 
-            if (score < MIN_ACCEPTED_SCORE) continue;
+            if (innerLand  < minInnerLand)  continue;
+            if (midOcean   < minMidOcean)   continue;
+            if (outerOcean < minOuterOcean) continue;
 
-            if (best == null || score > best.score ||
-                (score == best.score && magnitudeSq(pos) < magnitudeSq(best.pos))) {
-                BlockPos top = new BlockPos(pos.getX(), topY, pos.getZ());
-                best = new Result(top, score, islandness, isolation, r.getSecond());
+            // Score combines: high inner-land + high outer-ocean = good island.
+            int score = innerLand * 100 + midOcean * 100 + outerOcean * 200;
+            long d = (long) pos.getX() * pos.getX() + (long) pos.getZ() * pos.getZ();
+            if (best == null || score > best.score) {
+                best = new Result(new BlockPos(pos.getX(), topY, pos.getZ()), score, r.getSecond(),
+                    String.format("habitable inner=%d/8 mid_ocean=%d/8 outer_ocean=%d/8", innerLand, midOcean, outerOcean));
             }
-        }
-
-        long elapsed = System.currentTimeMillis() - t0;
-        if (best == null) {
-            Mists.LOG.warn("Mists: NaturalSpawnFinder found 0 acceptable candidates in {}ms ({} considered, {} scored)",
-                elapsed, candidatesConsidered, candidatesScored);
-        } else {
-            Mists.LOG.info("Mists: NaturalSpawnFinder picked ({}, {}, {}) score={} islandness={}/100 isolation={}/100 biome={} ({}ms, {} considered)",
-                best.pos.getX(), best.pos.getY(), best.pos.getZ(),
-                best.score, best.islandness, best.isolation,
-                best.biome.getKey().map(k -> k.getValue().toString()).orElse("?"),
-                elapsed, candidatesConsidered);
         }
         return best;
     }
 
-    /** Returns {islandness, isolation} as ints 0..100.
-     *  Uses 4-ring × 8-angle = 32-sample stencil — small enough to be fast. */
-    private static int[] scoreCandidate(ChunkGenerator chunkGen, NoiseConfig noiseConfig,
-                                         ServerWorld world, int cx, int cz, int seaLevel) {
-        int innerLand = 0, innerTotal = 0;
-        int outerOcean = 0, outerTotal = 0;
-        // 2 inner rings + 2 outer rings × 8 angles.
-        for (int ringIdx = 0; ringIdx < 4; ringIdx++) {
-            // Ring radii: INNER_RADIUS/2, INNER_RADIUS, (INNER+OUTER)/2, OUTER_RADIUS.
-            int ringR = switch (ringIdx) {
-                case 0 -> INNER_RADIUS / 2;
-                case 1 -> INNER_RADIUS;
-                case 2 -> (INNER_RADIUS + OUTER_RADIUS) / 2;
-                default -> OUTER_RADIUS;
-            };
-            boolean inner = ringIdx < 2;
-            for (int a = 0; a < ANGLES_PER_RING; a++) {
-                double angle = a * (2.0 * Math.PI / ANGLES_PER_RING);
-                int sx = cx + (int) (Math.cos(angle) * ringR);
-                int sz = cz + (int) (Math.sin(angle) * ringR);
-                int top = chunkGen.getHeight(sx, sz,
-                    Heightmap.Type.WORLD_SURFACE_WG, world, noiseConfig);
-                boolean isLand = top > seaLevel;
-                if (inner) {
-                    innerTotal++;
-                    if (isLand) innerLand++;
-                } else {
-                    outerTotal++;
-                    if (!isLand) outerOcean++;
-                }
-            }
+    /** Count how many of the 8 cardinal-direction samples at the given radius are land. */
+    private static int countLand(ChunkGenerator chunkGen, NoiseConfig noiseConfig, ServerWorld world,
+                                  int cx, int cz, int radius, int seaLevel) {
+        int land = 0;
+        for (int a = 0; a < SAMPLES_PER_RING; a++) {
+            double angle = a * (2.0 * Math.PI / SAMPLES_PER_RING);
+            int sx = cx + (int) (Math.cos(angle) * radius);
+            int sz = cz + (int) (Math.sin(angle) * radius);
+            int top = chunkGen.getHeight(sx, sz,
+                Heightmap.Type.WORLD_SURFACE_WG, world, noiseConfig);
+            if (top > seaLevel) land++;
         }
-        int islandness = innerTotal == 0 ? 0 : (innerLand * 100 / innerTotal);
-        int isolation  = outerTotal == 0 ? 0 : (outerOcean * 100 / outerTotal);
-        return new int[]{ islandness, isolation };
+        return land;
     }
 
-    private static long magnitudeSq(BlockPos p) {
-        return (long) p.getX() * p.getX() + (long) p.getZ() * p.getZ();
-    }
+    // ─────────────────────────────────────────────────────────────────────────────
+    // Biome predicate
+    // ─────────────────────────────────────────────────────────────────────────────
 
     private static boolean isHabitableBiome(RegistryEntry<Biome> e) {
         if (e.isIn(BiomeTags.IS_OCEAN)) return false;
@@ -176,6 +203,13 @@ public final class NaturalSpawnFinder {
         if (e.isIn(BiomeTags.IS_MOUNTAIN)) return false;
         if (e.isIn(BiomeTags.IS_DEEP_OCEAN)) return false;
         return true;
+    }
+
+    private static void log(Result r, long t0, String strategy) {
+        Mists.LOG.info("Mists: NaturalSpawnFinder ({}) picked ({}, {}, {}) score={} biome={} in {}ms",
+            strategy, r.pos.getX(), r.pos.getY(), r.pos.getZ(), r.score,
+            r.biome.getKey().map(k -> k.getValue().toString()).orElse("?"),
+            System.currentTimeMillis() - t0);
     }
 
     private NaturalSpawnFinder() {}
