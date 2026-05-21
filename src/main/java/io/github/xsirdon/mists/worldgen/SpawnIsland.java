@@ -2,6 +2,7 @@ package io.github.xsirdon.mists.worldgen;
 
 import io.github.xsirdon.mists.Mists;
 import net.minecraft.block.Block;
+import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.util.math.BlockPos;
@@ -10,178 +11,248 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
 
+/**
+ * Builds a small, natural-looking spawn island that BLENDS into an existing ocean.
+ *
+ * <p>This is a v0.8 rewrite. Previous versions carved a synthetic ocean disc around the
+ * spawn point and pasted a dirt-and-grass island into the middle, which gave a visible
+ * "took a chunk out of the land" effect. We now require the caller to have located a
+ * genuinely open ocean (see {@link IslandPlacer#findOpenOcean}) and do no carving at all —
+ * the natural ocean stays untouched.
+ *
+ * <p>Layer stack (per cell inside the island shape):
+ * <pre>
+ *   y = topY              grass (interior) or sand (beach band)
+ *   y = topY-1 .. seaLevel+1   dirt
+ *   y = seaLevel          sand   (waterline beach)
+ *   y = seaLevel-1 .. oceanFloor+1   sand (underwater shelf)
+ *   y &lt;= oceanFloor          natural ocean floor — untouched
+ * </pre>
+ *
+ * <p>The island height is determined by a smooth profile (taller near centre, lower at
+ * the edges) plus per-cell noise. Edges naturally taper to the waterline and become
+ * beach cells. The underwater shelf reaches down to the existing ocean floor so the
+ * island looks like it has roots, not like it was dropped on the water.
+ */
 public final class SpawnIsland {
 
     public static final double SPAWN_ISLAND_RADIUS = 28.0;   // ~4 chunks across
-    public static final int    SPAWN_Y = 65;                  // top of island
-    public static final int    BASE_Y  = 60;
 
-    /** Radius of the visible ocean around the spawn island. Carve happens out to this radius
-     *  in a CIRCLE (not a square) so the player sees a round body of water, not a rectangle. */
-    public static final int OCEAN_RING_RADIUS = 80;
+    /** Maximum island height above sea level for the central core. */
+    private static final int MAX_HEIGHT_ABOVE_SEA = 4;
 
-    /** Top of the air-clear column. Any natural terrain at or below SKY_CLEAR_Y is replaced
-     *  with air on cells inside the island, so spawn isn't buried under a mountain. */
-    public static final int SKY_CLEAR_Y = 120;
+    /** How deep the underwater sand shelf may extend (search depth). */
+    private static final int UNDERWATER_SHELF_PROBE = 12;
 
+    /** Legacy constants. Internally the v0.8 build path uses dynamic sea level; these are kept
+     *  for code that still references them (ring-island placement, the player-join rescue
+     *  fallback). They assume vanilla sea level 63 and are safe approximations. */
+    public static final int SPAWN_Y = 65;
+    public static final int BASE_Y  = 60;
+
+    /**
+     * @param world     server world the island is being built into
+     * @param cx        island centre X (must be in open ocean — caller's responsibility)
+     * @param cz        island centre Z
+     * @param worldSeed world seed (used for deterministic per-cell variation)
+     */
     public static void build(ServerWorld world, double cx, double cz, long worldSeed) {
+        int seaLevel = world.getSeaLevel();
         IslandShape shape = new IslandShape(cx, cz, SPAWN_ISLAND_RADIUS, worldSeed);
-        // Iterate a square enclosing the ocean disc, but only act on cells inside the disc.
-        int xFrom = (int) Math.floor(cx - OCEAN_RING_RADIUS);
-        int xTo   = (int) Math.ceil (cx + OCEAN_RING_RADIUS);
-        int zFrom = (int) Math.floor(cz - OCEAN_RING_RADIUS);
-        int zTo   = (int) Math.ceil (cz + OCEAN_RING_RADIUS);
 
-        double beachThreshold = SPAWN_ISLAND_RADIUS * 0.85;
-        double hillThreshold  = SPAWN_ISLAND_RADIUS * 0.4;
-        long oceanR2 = (long) OCEAN_RING_RADIUS * OCEAN_RING_RADIUS;
-        List<int[]> hillCells = new ArrayList<>();
+        int xFrom = (int) Math.floor(cx - SPAWN_ISLAND_RADIUS - 4);
+        int xTo   = (int) Math.ceil (cx + SPAWN_ISLAND_RADIUS + 4);
+        int zFrom = (int) Math.floor(cz - SPAWN_ISLAND_RADIUS - 4);
+        int zTo   = (int) Math.ceil (cz + SPAWN_ISLAND_RADIUS + 4);
+
+        List<int[]> grassCells = new ArrayList<>();
+        List<int[]> coreCells  = new ArrayList<>();
+        int spawnTopY = seaLevel + MAX_HEIGHT_ABOVE_SEA; // updated to actual top at (cx, cz)
 
         for (int x = xFrom; x <= xTo; x++) {
             for (int z = zFrom; z <= zTo; z++) {
-                double ddx = x - cx, ddz = z - cz;
-                double d2 = ddx * ddx + ddz * ddz;
-                if (d2 > oceanR2) continue; // outside the round ocean ring — leave natural terrain
+                if (!shape.contains(x, z)) continue;
 
-                if (shape.contains(x, z)) {
-                    double dist = Math.sqrt(d2);
+                int topY = computeTopY(x, z, cx, cz, seaLevel, worldSeed);
+                if (topY < seaLevel) continue; // island falls below water here, treat as natural ocean
+                if (x == (int) cx && z == (int) cz) spawnTopY = topY;
 
-                    // Fill column with dirt up to SPAWN_Y - 1
-                    for (int y = BASE_Y; y <= SPAWN_Y - 1; y++) {
-                        world.setBlockState(new BlockPos(x, y, z), Blocks.DIRT.getDefaultState(), 2);
+                boolean isBeach = topY <= seaLevel; // top sits at the waterline
+
+                // Underwater sand shelf — find the natural floor and fill upward with sand.
+                int floor = findOceanFloor(world, x, z, seaLevel);
+                for (int y = floor + 1; y < seaLevel; y++) {
+                    setIfDifferent(world, x, y, z, Blocks.SAND.getDefaultState());
+                }
+
+                // Sand at the waterline.
+                setIfDifferent(world, x, seaLevel, z, Blocks.SAND.getDefaultState());
+
+                // Dirt body above water (skipped on beach cells where topY == seaLevel).
+                for (int y = seaLevel + 1; y < topY; y++) {
+                    setIfDifferent(world, x, y, z, Blocks.DIRT.getDefaultState());
+                }
+
+                // Surface cap.
+                BlockState cap = isBeach ? Blocks.SAND.getDefaultState() : Blocks.GRASS_BLOCK.getDefaultState();
+                setIfDifferent(world, x, topY, z, cap);
+
+                // Clear any natural air-above (no-op in true ocean; defensive if the
+                // caller mis-located on coastline land).
+                for (int y = topY + 1; y <= seaLevel + MAX_HEIGHT_ABOVE_SEA + 8; y++) {
+                    BlockPos p = new BlockPos(x, y, z);
+                    if (!world.getBlockState(p).isAir()) {
+                        world.setBlockState(p, Blocks.AIR.getDefaultState(), 2);
                     }
+                }
 
-                    if (dist > beachThreshold) {
-                        // Sand beach band on the outer ring.
-                        world.setBlockState(new BlockPos(x, SPAWN_Y, z), Blocks.SAND.getDefaultState(), 2);
-                    } else {
-                        world.setBlockState(new BlockPos(x, SPAWN_Y, z), Blocks.GRASS_BLOCK.getDefaultState(), 2);
-
-                        if (dist < hillThreshold) {
-                            // Add 1 extra grass block above SPAWN_Y, then a second with 30% probability.
-                            world.setBlockState(new BlockPos(x, SPAWN_Y + 1, z),
-                                Blocks.GRASS_BLOCK.getDefaultState(), 2);
-                            long cellSeed = worldSeed ^ (((long) x << 32) | (z & 0xFFFFFFFFL));
-                            Random cellRng = new Random(cellSeed);
-                            if (cellRng.nextDouble() < 0.30) {
-                                world.setBlockState(new BlockPos(x, SPAWN_Y + 2, z),
-                                    Blocks.GRASS_BLOCK.getDefaultState(), 2);
-                            }
-                            hillCells.add(new int[]{ x, z });
-                        }
-                    }
-
-                    // Clear any natural terrain ABOVE the island so spawn isn't buried under
-                    // a mountain when the locate-biome fallback put us inland.
-                    for (int y = SPAWN_Y + 3; y <= SKY_CLEAR_Y; y++) {
-                        world.setBlockState(new BlockPos(x, y, z), Blocks.AIR.getDefaultState(), 2);
-                    }
-                } else {
-                    OceanCarver.carveColumnToOcean(world, x, z);
+                if (!isBeach) {
+                    grassCells.add(new int[]{ x, z, topY });
+                    if (topY >= seaLevel + 2) coreCells.add(new int[]{ x, z, topY });
                 }
             }
         }
 
-        // Tree placement: 4-6 oaks scattered within the central grass area.
-        Random treeRng = new Random(worldSeed ^ 0x7E5_5L);
-        int treeCount = 4 + treeRng.nextInt(3); // 4, 5, or 6
-        if (!hillCells.isEmpty()) {
-            int attempts = 0;
-            int placed = 0;
-            List<int[]> placedAt = new ArrayList<>();
-            while (placed < treeCount && attempts < treeCount * 20) {
-                attempts++;
-                int[] cell = hillCells.get(treeRng.nextInt(hillCells.size()));
-                int tx = cell[0], tz = cell[1];
-                // Min 4-block spacing from already placed trees.
-                boolean tooClose = false;
-                for (int[] pp : placedAt) {
-                    int dxp = pp[0] - tx, dzp = pp[1] - tz;
-                    if (dxp * dxp + dzp * dzp < 16) { tooClose = true; break; }
-                }
-                if (tooClose) continue;
-                int topY = topGrassY(world, tx, tz);
-                placeTree(world, tx, topY + 1, tz);
-                placedAt.add(new int[]{ tx, tz });
-                placed++;
-            }
-        }
+        // Force the world spawn block onto a known-safe grass square at the island centre.
+        // (IslandPlacer also calls setSpawnPos, but anchoring the y here matches the
+        // actual built top so vanilla "find safe spawn" doesn't search outward.)
+        BlockPos spawnPos = new BlockPos((int) cx, spawnTopY + 1, (int) cz);
+        world.setSpawnPos(spawnPos, 0f);
 
-        decorate(world, (int) cx, (int) cz, worldSeed);
+        // Trees: 4–6 scattered in the core grass area, min 4-block spacing.
+        placeTrees(world, coreCells, worldSeed);
 
-        Mists.LOG.info("Mists: spawn island built at ({}, {})", (int) cx, (int) cz);
+        // Decoration: tall grass, flowers, dirt patches, optional pond.
+        decorate(world, (int) cx, (int) cz, worldSeed, seaLevel);
+
+        Mists.LOG.info("Mists: spawn island built at ({}, ~{}, {}) with sea level {}",
+            (int) cx, spawnTopY, (int) cz, seaLevel);
     }
 
     /**
-     * Post-terrain decoration pass: pond, tall grass, flowers, dirt patches.
-     * Seeded deterministically from {@code worldSeed ^ (cx * 31 + cz)} so a given seed
-     * yields the same scenery on world reloads.
+     * Smooth height profile: centre rises to MAX_HEIGHT_ABOVE_SEA, edges taper to the waterline.
+     * Adds seeded per-cell noise so the surface looks organic instead of like a parabolic bowl.
      */
-    private static void decorate(ServerWorld world, int cx, int cz, long worldSeed) {
-        Random rng = new Random(worldSeed ^ ((long) (cx * 31 + cz)));
+    private static int computeTopY(int x, int z, double cx, double cz, int seaLevel, long worldSeed) {
+        double ddx = x - cx, ddz = z - cz;
+        double dist = Math.sqrt(ddx * ddx + ddz * ddz);
+        double normalized = Math.min(1.0, dist / SPAWN_ISLAND_RADIUS);
 
-        // Collect available grass cells (the pond placement and dirt patches consume from this).
-        List<int[]> grass = IslandDecoration.collectGrassSurface(
-            world, cx, cz, (int) Math.ceil(SPAWN_ISLAND_RADIUS) + 2, SPAWN_Y);
-        if (grass.isEmpty()) return;
+        // Smoothstep falloff: high at centre, gradual taper to zero at the edge.
+        double s = 1.0 - normalized;
+        double smoothed = s * s * (3.0 - 2.0 * s);
 
-        // 1. Single freshwater pond — deterministic position inside the core (≤ R*0.35).
-        double coreR = SPAWN_ISLAND_RADIUS * 0.35;
-        for (int attempt = 0; attempt < 16; attempt++) {
-            double a = rng.nextDouble() * Math.PI * 2;
-            double r = rng.nextDouble() * coreR;
-            int px = cx + (int) Math.round(Math.cos(a) * r);
-            int pz = cz + (int) Math.round(Math.sin(a) * r);
-            if (world.getBlockState(new BlockPos(px, SPAWN_Y, pz)).isOf(Blocks.GRASS_BLOCK)) {
-                IslandDecoration.carvePond(world, px, pz, SPAWN_Y);
-                break;
-            }
-        }
+        // Base height in blocks above sea level.
+        double base = smoothed * MAX_HEIGHT_ABOVE_SEA;
 
-        // 2. Dirt patches (3-6 of them, 2x2 each).
-        int patchCount = 3 + rng.nextInt(4); // 3..6
-        for (int i = 0; i < patchCount; i++) {
-            int[] c = grass.get(rng.nextInt(grass.size()));
-            IslandDecoration.dirtPatch(world, c[0], c[1], SPAWN_Y);
-        }
+        // Per-cell deterministic noise: ±1.5 blocks of bump variation.
+        long cellSeed = worldSeed ^ ((long) x * 0x9E3779B97F4A7C15L) ^ ((long) z * 0xBF58476D1CE4E5B9L);
+        Random cellRng = new Random(cellSeed);
+        double noise = (cellRng.nextDouble() - 0.5) * 3.0;
 
-        // Recollect grass cells — pond + dirt patches have shrunk the surface.
-        grass = IslandDecoration.collectGrassSurface(
-            world, cx, cz, (int) Math.ceil(SPAWN_ISLAND_RADIUS) + 2, SPAWN_Y);
-
-        // 3. Tall grass tufts (4-8).
-        Block tallGrass = IslandDecoration.tallGrassBlock();
-        int tufts = 4 + rng.nextInt(5); // 4..8
-        IslandDecoration.scatterPlants(world, grass, rng, tufts, tallGrass, SPAWN_Y, 1);
-
-        // 4. Dandelions (1-3) + poppies (0-2).
-        int dandelions = 1 + rng.nextInt(3); // 1..3
-        IslandDecoration.scatterPlants(world, grass, rng, dandelions, Blocks.DANDELION, SPAWN_Y, 4);
-        int poppies = rng.nextInt(3); // 0..2
-        IslandDecoration.scatterPlants(world, grass, rng, poppies, Blocks.POPPY, SPAWN_Y, 4);
+        double h = base + noise;
+        // Clamp: never below sea level (that would be ocean) and never above MAX+2.
+        if (h < -0.5) return seaLevel - 1; // below water, treat as natural ocean
+        int height = (int) Math.round(Math.max(0, Math.min(MAX_HEIGHT_ABOVE_SEA + 1, h)));
+        return seaLevel + height;
     }
 
-    private static int topGrassY(ServerWorld world, int x, int z) {
-        for (int y = SPAWN_Y + 3; y >= SPAWN_Y; y--) {
-            if (world.getBlockState(new BlockPos(x, y, z)).isOf(Blocks.GRASS_BLOCK)) {
+    /**
+     * Walk down from {@code seaLevel - 1} looking for the first non-water, non-air block.
+     * If we don't find one within {@link #UNDERWATER_SHELF_PROBE} blocks, return a
+     * reasonable default to avoid digging arbitrarily deep.
+     */
+    private static int findOceanFloor(ServerWorld world, int x, int z, int seaLevel) {
+        for (int y = seaLevel - 1; y >= seaLevel - UNDERWATER_SHELF_PROBE; y--) {
+            BlockState bs = world.getBlockState(new BlockPos(x, y, z));
+            if (!bs.isAir() && !bs.isOf(Blocks.WATER)) {
                 return y;
             }
         }
-        return SPAWN_Y;
+        return seaLevel - UNDERWATER_SHELF_PROBE;
     }
 
-    private static void placeTree(ServerWorld world, int x, int y, int z) {
-        // Trunk
-        for (int i = 0; i < 5; i++)
-            world.setBlockState(new BlockPos(x, y + i, z), Blocks.OAK_LOG.getDefaultState(), 2);
-        // Leaves (3x3x3 canopy)
-        for (int dx = -2; dx <= 2; dx++)
-            for (int dz = -2; dz <= 2; dz++)
-                for (int dy = 3; dy <= 5; dy++) {
-                    BlockPos p = new BlockPos(x + dx, y + dy, z + dz);
-                    if (world.getBlockState(p).isAir() && Math.abs(dx) + Math.abs(dz) + Math.abs(dy - 4) <= 4)
+    /** Avoid noisy block updates by only writing when the target differs. */
+    private static void setIfDifferent(ServerWorld world, int x, int y, int z, BlockState desired) {
+        BlockPos p = new BlockPos(x, y, z);
+        if (!world.getBlockState(p).equals(desired)) {
+            world.setBlockState(p, desired, 2);
+        }
+    }
+
+    private static void placeTrees(ServerWorld world, List<int[]> coreCells, long worldSeed) {
+        if (coreCells.isEmpty()) return;
+        Random treeRng = new Random(worldSeed ^ 0x7E_E5L);
+        int target = 4 + treeRng.nextInt(3); // 4–6
+        int attempts = 0;
+        int placed = 0;
+        List<int[]> placedAt = new ArrayList<>();
+        while (placed < target && attempts < target * 30) {
+            attempts++;
+            int[] c = coreCells.get(treeRng.nextInt(coreCells.size()));
+            int tx = c[0], tz = c[1], ty = c[2];
+            boolean tooClose = false;
+            for (int[] pp : placedAt) {
+                int ddx = pp[0] - tx, ddz = pp[1] - tz;
+                if (ddx * ddx + ddz * ddz < 25) { tooClose = true; break; } // 5-block min spacing
+            }
+            if (tooClose) continue;
+            placeOakTree(world, tx, ty + 1, tz, treeRng);
+            placedAt.add(new int[]{ tx, tz });
+            placed++;
+        }
+    }
+
+    private static void placeOakTree(ServerWorld world, int x, int yBase, int z, Random rng) {
+        int height = 4 + rng.nextInt(2); // 4-5 trunk
+        for (int i = 0; i < height; i++) {
+            world.setBlockState(new BlockPos(x, yBase + i, z), Blocks.OAK_LOG.getDefaultState(), 2);
+        }
+        int leafTop = yBase + height;
+        for (int dy = -1; dy <= 1; dy++) {
+            int radius = (dy == 1) ? 1 : 2;
+            for (int dx = -radius; dx <= radius; dx++) {
+                for (int dz = -radius; dz <= radius; dz++) {
+                    if (dx == 0 && dz == 0 && dy <= 0) continue;
+                    int dist2 = dx * dx + dz * dz + dy * dy;
+                    if (dist2 > radius * radius + 1) continue;
+                    BlockPos p = new BlockPos(x + dx, leafTop + dy, z + dz);
+                    if (world.getBlockState(p).isAir()) {
                         world.setBlockState(p, Blocks.OAK_LEAVES.getDefaultState(), 2);
+                    }
                 }
+            }
+        }
+    }
+
+    /**
+     * Post-terrain decoration pass: optional pond, tall grass, flowers, dirt patches.
+     * Seeded deterministically from {@code worldSeed ^ (cx * 31 + cz)} so a given seed
+     * yields the same scenery on world reloads.
+     */
+    private static void decorate(ServerWorld world, int cx, int cz, long worldSeed, int seaLevel) {
+        Random rng = new Random(worldSeed ^ ((long) (cx * 31 + cz)));
+
+        int searchRadius = (int) Math.ceil(SPAWN_ISLAND_RADIUS) + 2;
+        List<int[]> grass = IslandDecoration.collectGrassSurface(
+            world, cx, cz, searchRadius, seaLevel + 1);
+        // The new height profile means grass tops can be at varying y; also try a few
+        // levels up so we catch hilltop grass.
+        for (int extraY = 1; extraY <= MAX_HEIGHT_ABOVE_SEA + 1; extraY++) {
+            grass.addAll(IslandDecoration.collectGrassSurface(world, cx, cz, searchRadius, seaLevel + extraY));
+        }
+        if (grass.isEmpty()) return;
+
+        // Tall grass tufts (4-8).
+        Block tallGrass = IslandDecoration.tallGrassBlock();
+        int tufts = 4 + rng.nextInt(5);
+        IslandDecoration.scatterPlants(world, grass, rng, tufts, tallGrass, seaLevel + 1, 1);
+
+        // Dandelions (1-3) + poppies (0-2).
+        int dandelions = 1 + rng.nextInt(3);
+        IslandDecoration.scatterPlants(world, grass, rng, dandelions, Blocks.DANDELION, seaLevel + 1, 4);
+        int poppies = rng.nextInt(3);
+        IslandDecoration.scatterPlants(world, grass, rng, poppies, Blocks.POPPY, seaLevel + 1, 4);
     }
 
     private SpawnIsland() {}

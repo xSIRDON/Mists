@@ -4,10 +4,10 @@ import io.github.xsirdon.mists.Mists;
 import io.github.xsirdon.mists.progression.LevelZBridge;
 import io.github.xsirdon.mists.progression.TierTable;
 import io.github.xsirdon.mists.worldgen.MistsWorldData;
-import io.github.xsirdon.mists.worldgen.SpawnIsland;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.server.world.ServerWorld;
+import net.minecraft.util.math.BlockPos;
 
 /**
  * On player join, if the player has been placed outside their mist boundary
@@ -36,7 +36,10 @@ public final class PlayerJoinClamp {
             double dist = Math.sqrt(dx * dx + dz * dz);
 
             if (dist > radius - 4) {
-                double safeY = SpawnIsland.SPAWN_Y + 2;
+                // Use the world's current spawn position (set by SpawnIsland.build to the
+                // actual top of the built island, accounting for height variation).
+                BlockPos worldSpawn = world.getSpawnPos();
+                double safeY = worldSpawn.getY() + 1; // one block above the spawn block
                 player.requestTeleport(cx, safeY, cz);
                 Mists.LOG.info("Mists: rescued player {} from outside boundary (dist {} > {}) → teleported to spawn ({}, {}, {})",
                     player.getGameProfile().getName(), (int) dist, (int) radius,
