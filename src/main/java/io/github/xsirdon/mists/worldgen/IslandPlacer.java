@@ -34,10 +34,12 @@ public final class IslandPlacer {
         placeRing(world, data, rng, 3, MistsConstants.TIER_3_RADIUS, 10 * 16,  28 * 16);
         placeRing(world, data, rng, 4, MistsConstants.TIER_4_RADIUS, 16 * 16,  48 * 16);
 
-        // Inter-island ocean carve (out to slightly beyond tier 4).
-        carveOcean(world, data, (int)(MistsConstants.TIER_4_RADIUS + 100));
+        // v0.1: Inter-island ocean carve is DISABLED. Doing ~12M synchronous block updates
+        // during world load froze the server thread. Players will see natural vanilla land
+        // between islands instead of ocean — aesthetic regression only, the mist boundary
+        // still gates progression correctly. v0.2 reintroduces this as paced background work.
 
-        Mists.LOG.info("Mists: archipelago placement complete ({} islands)", data.islands.size());
+        Mists.LOG.info("Mists: archipelago placement complete ({} islands, ocean carve skipped for v0.1)", data.islands.size());
     }
 
     private static void placeRing(ServerWorld world, MistsWorldData data, Random rng,
