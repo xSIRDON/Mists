@@ -46,11 +46,16 @@ public final class MistsIslandConfig {
         long mistsSeed = worldSeed ^ SEED_MASK;
         java.util.Random rng = new java.util.Random(mistsSeed);
         double angle = rng.nextDouble() * 2.0 * Math.PI;
-        // 3000..5500 blocks from origin — far enough that the island lands well
-        // out at sea, away from any continental coastline that ambient worldgen
-        // may have produced near (0,0). The player is now genuinely in the middle
-        // of nowhere when they spawn.
-        double dist = 3000.0 + rng.nextDouble() * 2500.0;
+        // v0.18: place the island within the 2000-block "water-world bubble"
+        // that the noise-router wrap forces to ocean. The bubble guarantees
+        // ocean biome + ocean terrain inside its radius, so the deterministic
+        // position no longer needs a runtime biome-relocation pass — the only
+        // land within 32+ chunks of spawn is our own island.
+        //
+        // 200..800 blocks gives the island a bit of distance from world origin
+        // (so spawn isn't right on top of the player's view-distance edge) but
+        // keeps it well inside the bubble before the fade band begins at 1800.
+        double dist = 200.0 + rng.nextDouble() * 600.0;
         int cx = (int) Math.round(Math.cos(angle) * dist);
         int cz = (int) Math.round(Math.sin(angle) * dist);
 

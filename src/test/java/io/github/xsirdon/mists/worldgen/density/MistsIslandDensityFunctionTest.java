@@ -31,9 +31,9 @@ class MistsIslandDensityFunctionTest {
         for (long s = 1; s < 30; s++) {
             MistsIslandConfig cfg = MistsIslandConfig.deriveFromSeed(s, SEA);
             double d = Math.sqrt((double) cfg.cx * cfg.cx + (double) cfg.cz * cfg.cz);
-            // v0.15 pushes the island out to 3000..5500 blocks from origin
-            // so it lands well away from continental land near (0,0).
-            assertTrue(d >= 2999.0 && d <= 5501.0,
+            // v0.18: island sits 200..800 blocks from origin, well inside the
+            // 2000-block water-world bubble the noise-router wrap installs.
+            assertTrue(d >= 199.0 && d <= 801.0,
                 "seed " + s + " landed at distance " + d);
         }
     }
@@ -96,5 +96,47 @@ class MistsIslandDensityFunctionTest {
         MistsIslandConfig got = MistsIslandRegistry.getOrDerive(7L, SEA);
         assertEquals(100, got.cx);
         assertEquals(200, got.cz);
+    }
+
+    // ── v0.18: water-world bubble bias ──────────────────────────────────────
+
+    @Test void bubbleBiasIsFullValueAtOrigin() {
+        assertEquals(-2.0, BubbleProfile.biasAt(-2.0, 0.0, 0.0), 1e-9);
+        assertEquals(-50.0, BubbleProfile.biasAt(-50.0, 0.0, 0.0), 1e-9);
+    }
+
+    @Test void bubbleBiasIsFullValueAtInteriorEdge() {
+        // dist = 1999 < 2000, so still full bias
+        assertEquals(-2.0, BubbleProfile.biasAt(-2.0, 1999.0, 0.0), 1e-9);
+    }
+
+    @Test void bubbleBiasIsZeroPastFadeBand() {
+        // dist = 2201 > 2200 (radius + band), so zero
+        assertEquals(0.0, BubbleProfile.biasAt(-2.0, 2201.0, 0.0), 1e-9);
+        assertEquals(0.0, BubbleProfile.biasAt(-50.0, 0.0, 3000.0), 1e-9);
+    }
+
+    @Test void bubbleBiasFadesMonotonicallyInBand() {
+        // Within [2000, 2200] the magnitude of the bias decreases monotonically.
+        double prevMag = Math.abs(BubbleProfile.biasAt(-2.0, 2000.0, 0.0));
+        for (double d = 2010.0; d <= 2200.0; d += 10.0) {
+            double mag = Math.abs(BubbleProfile.biasAt(-2.0, d, 0.0));
+            assertTrue(mag <= prevMag + 1e-9,
+                "bias should not grow as distance grows: at " + d + " got " + mag + " prev " + prevMag);
+            prevMag = mag;
+        }
+        assertEquals(0.0, BubbleProfile.biasAt(-2.0, 2200.0, 0.0), 1e-9);
+    }
+
+    @Test void islandPositionIsInsideBubble() {
+        // Every derived island for low seeds must sit within the bubble so it
+        // is guaranteed forced-ocean terrain around it.
+        for (long s = 1; s < 50; s++) {
+            MistsIslandConfig cfg = MistsIslandConfig.deriveFromSeed(s, SEA);
+            double d = Math.sqrt((double) cfg.cx * cfg.cx + (double) cfg.cz * cfg.cz);
+            assertTrue(d < BubbleProfile.BUBBLE_RADIUS,
+                "seed " + s + " landed at " + d + " — outside bubble radius "
+                    + BubbleProfile.BUBBLE_RADIUS);
+        }
     }
 }

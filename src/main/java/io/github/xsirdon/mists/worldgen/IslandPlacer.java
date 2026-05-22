@@ -136,30 +136,12 @@ public final class IslandPlacer {
             int seaLevel = world.getSeaLevel();
             MistsIslandConfig cfg = MistsIslandConfig.deriveFromSeed(seed, seaLevel);
 
-            // v0.17: verify the deterministic position is in ocean biome. If natural
-            // vanilla terrain at that spot is already mountain/forest/etc., our
-            // density-add via max(natural, ours) loses — vanilla terrain dominates
-            // and our island never materialises. Relocate to the nearest ocean.
-            BlockPos checkPos = new BlockPos(cfg.cx, seaLevel, cfg.cz);
-            RegistryEntry<Biome> biome = world.getBiome(checkPos);
-            if (!ANY_OCEAN.test(biome)) {
-                Mists.LOG.info("Mists: deterministic position ({}, {}) is biome {} (not ocean) — searching for ocean nearby",
-                    cfg.cx, cfg.cz,
-                    biome.getKey().map(k -> k.getValue().toString()).orElse("unknown"));
-                Pair<BlockPos, RegistryEntry<Biome>> r =
-                    world.locateBiome(ANY_OCEAN, checkPos, 2500, 64, 64);
-                if (r != null) {
-                    BlockPos oceanPos = r.getFirst();
-                    cfg = new MistsIslandConfig(
-                        oceanPos.getX(), oceanPos.getZ(), seaLevel,
-                        cfg.surfaceRadius, cfg.underwaterRadius,
-                        cfg.maxHeight, cfg.maxDepth, cfg.worldSeed);
-                    Mists.LOG.info("Mists: relocated island to ocean at ({}, {})", cfg.cx, cfg.cz);
-                } else {
-                    Mists.LOG.warn("Mists: no ocean within 2500 blocks of deterministic position — island may be hidden under vanilla terrain");
-                }
-            }
-
+            // v0.18: the noise-router wrap installed by NoiseConfigMixin forces
+            // ocean biome + ocean terrain throughout a 2000-block bubble around
+            // origin. The island is derived to sit at 200..800 blocks from
+            // origin (see MistsIslandConfig.deriveFromSeed), so the deterministic
+            // position is guaranteed to be ocean — no v0.17-style biome
+            // verification / relocation pass is needed.
             MistsIslandRegistry.register(cfg);
 
             data.spawnX = cfg.cx;
@@ -173,7 +155,7 @@ public final class IslandPlacer {
             data.islands.add(new MistsWorldData.IslandRecord(
                 1, data.spawnX, data.spawnZ, islandRadius, seed));
             Mists.LOG.info(
-                "Mists: density-function island registered at ({}, {}) surfaceR={} (vanilla chunk-gen will materialise terrain)",
+                "Mists: island placed within water-world bubble at ({}, {}) surfaceR={}",
                 cfg.cx, cfg.cz, (int) islandRadius);
             Mists.LOG.info("Mists: spawn placement complete ({} record)", data.islands.size());
             return;
