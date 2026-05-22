@@ -143,8 +143,13 @@ public final class IslandPlacer {
             Mists.LOG.info("Mists: using natural island at ({}, {}) — measured radius {}, tier1 mist {}",
                 (int) data.spawnX, (int) data.spawnZ, islandRadius, (int) data.tier1RadiusOverride);
         } else {
-            // ── Fallback: no natural island found, build an artificial one ────
-            Mists.LOG.warn("Mists: no suitable natural island in the seed; falling back to artificial generation.");
+            // ── Fallback: build an artificial island via NaturalIslandBuilder ──
+            // v0.12: this path now uses 3D noise cave carving + vanilla configured
+            // features (TreeConfiguredFeatures.OAK, VegetationConfiguredFeatures.*,
+            // OreConfiguredFeatures.*). The result is built from the ocean floor up
+            // through stone (with carved caves), dirt, then grass cap with vanilla
+            // trees/grass/flowers placed by Minecraft's own feature generators.
+            Mists.LOG.warn("Mists: no suitable natural island in the seed; building artificial island via vanilla feature pipeline.");
             BlockPos found = findOpenOcean(world);
             if (found == null) {
                 data.spawnX = 0.0;
@@ -154,11 +159,15 @@ public final class IslandPlacer {
                 data.spawnX = found.getX();
                 data.spawnZ = found.getZ();
             }
-            SpawnIsland.build(world, data.spawnX, data.spawnZ, seed);
-            // Artificial island has a known radius; tier 1 mist wraps it + buffer.
-            data.tier1RadiusOverride = SpawnIsland.SPAWN_ISLAND_RADIUS + 25;
+            double islandRadius = SpawnIsland.SPAWN_ISLAND_RADIUS;
+            NaturalIslandBuilder.Result result = NaturalIslandBuilder.build(
+                world, data.spawnX, data.spawnZ, islandRadius,
+                /*maxHeight*/ 5, /*edgeBias*/ 1.5, seed, seed);
+            BlockPos spawnPos = new BlockPos((int) data.spawnX, result.centerTopY() + 1, (int) data.spawnZ);
+            world.setSpawnPos(spawnPos, 0f);
+            data.tier1RadiusOverride = islandRadius + 25;
             data.islands.add(new MistsWorldData.IslandRecord(
-                1, data.spawnX, data.spawnZ, SpawnIsland.SPAWN_ISLAND_RADIUS, seed));
+                1, data.spawnX, data.spawnZ, islandRadius, seed));
         }
 
         // ── Ring placement DISABLED for v0.11 ─────────────────────────────────
