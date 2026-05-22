@@ -2,6 +2,8 @@ package io.github.xsirdon.mists.worldgen;
 
 import com.mojang.datafixers.util.Pair;
 import io.github.xsirdon.mists.Mists;
+import io.github.xsirdon.mists.worldgen.density.MistsIslandConfig;
+import io.github.xsirdon.mists.worldgen.density.MistsIslandRegistry;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerWorldEvents;
 import net.minecraft.registry.entry.RegistryEntry;
 import net.minecraft.registry.tag.BiomeTags;
@@ -118,13 +120,44 @@ public final class IslandPlacer {
     private static void place(ServerWorld world, MistsWorldData data) {
         long seed = world.getSeed();
 
-        // ── v0.11: Prefer a NATURAL island from the seed's terrain ────────────
-        // ChunkGenerator.getHeight samples the noise function directly so we can
-        // survey thousands of candidate positions without loading any chunks.
-        // We pick the best-scoring "small isolated landmass" and set spawn there.
-        // No block placement happens at all — the actual island is whatever
-        // vanilla worldgen + biome surface rules + carvers produce. Caves spawn.
-        // Ores spawn. Trees grow per the biome. It's the seed's island.
+        // ── v0.14: density-function pathway — the island IS the seed's terrain ─
+        // The MistsIslandDensityFunction installed by NoiseConfigMixin makes
+        // vanilla chunk-gen produce our island as native terrain: stone with
+        // carved caves, sand/grass surface rules, biome-appropriate features
+        // (trees, ores, flora). The foundation tapers into the natural seafloor
+        // because both come out of the same density function.
+        //
+        // The IslandConfig is canonicalised here so future code paths can read
+        // it from the registry by world seed; the mixin itself derives the same
+        // values deterministically from the seed if the registry hasn't been
+        // populated yet (e.g. when generating the very first chunks before this
+        // ServerWorldEvents.LOAD hook fires).
+        if (MistsIslandRegistry.isEnabled()) {
+            int seaLevel = world.getSeaLevel();
+            MistsIslandConfig cfg = MistsIslandConfig.deriveFromSeed(seed, seaLevel);
+            MistsIslandRegistry.register(cfg);
+
+            data.spawnX = cfg.cx;
+            data.spawnZ = cfg.cz;
+            // Spawn just above the highest point the profile produces at the centre.
+            int spawnY = seaLevel + cfg.maxHeight + 1;
+            world.setSpawnPos(new BlockPos(cfg.cx, spawnY, cfg.cz), 0f);
+
+            double islandRadius = cfg.surfaceRadius;
+            data.tier1RadiusOverride = islandRadius + 25;
+            data.islands.add(new MistsWorldData.IslandRecord(
+                1, data.spawnX, data.spawnZ, islandRadius, seed));
+            Mists.LOG.info(
+                "Mists: density-function island registered at ({}, {}) surfaceR={} (vanilla chunk-gen will materialise terrain)",
+                cfg.cx, cfg.cz, (int) islandRadius);
+            Mists.LOG.info("Mists: spawn placement complete ({} record)", data.islands.size());
+            return;
+        }
+
+        // ── Legacy path (kept for safety) ────────────────────────────────────
+        // Triggered only if MistsIslandRegistry.setEnabled(false) was called.
+        // Prefers a natural island from the seed's terrain; falls back to
+        // block-by-block construction via NaturalIslandBuilder.
         NaturalSpawnFinder.Result natural = NaturalSpawnFinder.find(world);
 
         if (natural != null) {
@@ -133,23 +166,15 @@ public final class IslandPlacer {
             BlockPos spawnPos = natural.pos.up();
             world.setSpawnPos(spawnPos, 0f);
 
-            // Measure the actual island extent so the tier-1 mist wraps the island
-            // closely. ~25 blocks of ocean buffer past the island edge.
             int islandRadius = NaturalSpawnFinder.measureIslandExtent(world,
                 (int) data.spawnX, (int) data.spawnZ);
             data.tier1RadiusOverride = islandRadius + 25;
             data.islands.add(new MistsWorldData.IslandRecord(
                 1, data.spawnX, data.spawnZ, islandRadius, seed));
-            Mists.LOG.info("Mists: using natural island at ({}, {}) — measured radius {}, tier1 mist {}",
+            Mists.LOG.info("Mists: (legacy) using natural island at ({}, {}) — measured radius {}, tier1 mist {}",
                 (int) data.spawnX, (int) data.spawnZ, islandRadius, (int) data.tier1RadiusOverride);
         } else {
-            // ── Fallback: build an artificial island via NaturalIslandBuilder ──
-            // v0.12: this path now uses 3D noise cave carving + vanilla configured
-            // features (TreeConfiguredFeatures.OAK, VegetationConfiguredFeatures.*,
-            // OreConfiguredFeatures.*). The result is built from the ocean floor up
-            // through stone (with carved caves), dirt, then grass cap with vanilla
-            // trees/grass/flowers placed by Minecraft's own feature generators.
-            Mists.LOG.warn("Mists: no suitable natural island in the seed; building artificial island via vanilla feature pipeline.");
+            Mists.LOG.warn("Mists: (legacy) no suitable natural island; building artificial via NaturalIslandBuilder.");
             BlockPos found = findOpenOcean(world);
             if (found == null) {
                 data.spawnX = 0.0;
