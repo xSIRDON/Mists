@@ -36,22 +36,38 @@ public final class MistsIslandDensityFunction implements DensityFunction.Base {
             CodecHolder.of(CODEC);
     }
 
-    private final MistsIslandConfig cfg;
+    private final long worldSeed;
+    private final int seaLevelHint;
+    /** Per-instance cached config — re-fetched from the registry whenever the
+     *  registry's version counter advances (e.g. IslandPlacer relocates the
+     *  island to an actual ocean biome after the mixin already installed). */
+    private volatile MistsIslandConfig cachedCfg;
+    private volatile long cachedVersion = -1L;
 
-    public MistsIslandDensityFunction(MistsIslandConfig cfg) {
-        this.cfg = cfg;
+    public MistsIslandDensityFunction(MistsIslandConfig initial) {
+        this.worldSeed = initial.worldSeed;
+        this.seaLevelHint = initial.seaLevel;
+        this.cachedCfg = initial;
     }
 
-    public MistsIslandConfig config() { return cfg; }
+    public MistsIslandConfig config() {
+        // Refresh-on-demand: if the registry has a newer cfg for our seed, swap it in.
+        long currentVersion = MistsIslandRegistry.version();
+        if (currentVersion != cachedVersion) {
+            cachedCfg = MistsIslandRegistry.getOrDerive(worldSeed, seaLevelHint);
+            cachedVersion = currentVersion;
+        }
+        return cachedCfg;
+    }
 
     @Override
     public double sample(DensityFunction.NoisePos pos) {
-        return IslandProfile.density(cfg, pos.blockX(), pos.blockY(), pos.blockZ());
+        return IslandProfile.density(config(), pos.blockX(), pos.blockY(), pos.blockZ());
     }
 
     /** Direct sample entry exposed for code that already has plain coordinates. */
     public double sampleAt(int x, int y, int z) {
-        return IslandProfile.density(cfg, x, y, z);
+        return IslandProfile.density(config(), x, y, z);
     }
 
     @Override

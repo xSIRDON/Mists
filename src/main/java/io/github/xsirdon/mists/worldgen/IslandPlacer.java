@@ -135,6 +135,31 @@ public final class IslandPlacer {
         if (MistsIslandRegistry.isEnabled()) {
             int seaLevel = world.getSeaLevel();
             MistsIslandConfig cfg = MistsIslandConfig.deriveFromSeed(seed, seaLevel);
+
+            // v0.17: verify the deterministic position is in ocean biome. If natural
+            // vanilla terrain at that spot is already mountain/forest/etc., our
+            // density-add via max(natural, ours) loses — vanilla terrain dominates
+            // and our island never materialises. Relocate to the nearest ocean.
+            BlockPos checkPos = new BlockPos(cfg.cx, seaLevel, cfg.cz);
+            RegistryEntry<Biome> biome = world.getBiome(checkPos);
+            if (!ANY_OCEAN.test(biome)) {
+                Mists.LOG.info("Mists: deterministic position ({}, {}) is biome {} (not ocean) — searching for ocean nearby",
+                    cfg.cx, cfg.cz,
+                    biome.getKey().map(k -> k.getValue().toString()).orElse("unknown"));
+                Pair<BlockPos, RegistryEntry<Biome>> r =
+                    world.locateBiome(ANY_OCEAN, checkPos, 2500, 64, 64);
+                if (r != null) {
+                    BlockPos oceanPos = r.getFirst();
+                    cfg = new MistsIslandConfig(
+                        oceanPos.getX(), oceanPos.getZ(), seaLevel,
+                        cfg.surfaceRadius, cfg.underwaterRadius,
+                        cfg.maxHeight, cfg.maxDepth, cfg.worldSeed);
+                    Mists.LOG.info("Mists: relocated island to ocean at ({}, {})", cfg.cx, cfg.cz);
+                } else {
+                    Mists.LOG.warn("Mists: no ocean within 2500 blocks of deterministic position — island may be hidden under vanilla terrain");
+                }
+            }
+
             MistsIslandRegistry.register(cfg);
 
             data.spawnX = cfg.cx;
