@@ -31,7 +31,9 @@ class MistsIslandDensityFunctionTest {
         for (long s = 1; s < 30; s++) {
             MistsIslandConfig cfg = MistsIslandConfig.deriveFromSeed(s, SEA);
             double d = Math.sqrt((double) cfg.cx * cfg.cx + (double) cfg.cz * cfg.cz);
-            assertTrue(d >= 199.5 && d <= 1001.0,
+            // v0.15 pushes the island out to 3000..5500 blocks from origin
+            // so it lands well away from continental land near (0,0).
+            assertTrue(d >= 2999.0 && d <= 5501.0,
                 "seed " + s + " landed at distance " + d);
         }
     }

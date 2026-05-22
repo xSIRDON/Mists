@@ -46,17 +46,16 @@ public final class MistsIslandConfig {
         long mistsSeed = worldSeed ^ SEED_MASK;
         java.util.Random rng = new java.util.Random(mistsSeed);
         double angle = rng.nextDouble() * 2.0 * Math.PI;
-        // 200..1000 blocks from origin — close enough that the first chunks
-        // generated near (0,0) won't include our terrain, far enough to feel
-        // exploratory.
-        double dist = 200.0 + rng.nextDouble() * 800.0;
+        // 3000..5500 blocks from origin — far enough that the island lands well
+        // out at sea, away from any continental coastline that ambient worldgen
+        // may have produced near (0,0). The player is now genuinely in the middle
+        // of nowhere when they spawn.
+        double dist = 3000.0 + rng.nextDouble() * 2500.0;
         int cx = (int) Math.round(Math.cos(angle) * dist);
         int cz = (int) Math.round(Math.sin(angle) * dist);
 
-        // Profile parameters chosen to make a small "starter island" — ~24 block
-        // surface radius, ~50 block underwater footprint, capped at 7 blocks above
-        // sea level. The 12-block depth lets the foundation actually reach into
-        // the seafloor on most terrain.
+        // Profile parameters. surfaceR is the island's above-water radius;
+        // underwaterR is where the sloped foundation reaches the seafloor.
         double surfaceR    = 24.0;
         double underwaterR = 50.0;
         int maxHeight = 7;
