@@ -13,7 +13,7 @@
     "client": ["io.github.xsirdon.mists.MistsClient"]
   },
   "mixins": [
-    { "config": "mists.mixins.json", "environment": "client" }
+    "mists.mixins.json"
   ],
   "depends": {
     "fabricloader": ">=0.16.0",
