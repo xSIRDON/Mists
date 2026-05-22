@@ -21,71 +21,76 @@ import java.util.Optional;
 import java.util.Random;
 
 /**
- * Builds a natural-looking island using Minecraft's own noise samplers and
- * vanilla configured features.
+ * Builds a natural-looking island whose foundation BLENDS into the surrounding
+ * ocean floor via a sloped underwater base, not a column.
  *
- * <p>Generation pipeline (per island, from the bottom up):
+ * <p>Conceptually the island is a height-field defined by a continuous density
+ * profile. For any (x, z), the profile evaluates to a topY relative to sea level:
  *
- * <ol>
- *   <li><b>Heightmap</b> — two-octave value noise + smoothstep distance falloff
- *       gives a coherent hill profile across the island footprint.</li>
- *   <li><b>Stone foundation</b> — column-by-column from the natural ocean floor
- *       up to {@code topY - 3}. Each interior stone cell is 3D-noise-tested for
- *       cave carving (small underwater caves form where the noise is high).</li>
- *   <li><b>Topsoil</b> — sand below the waterline, dirt above. Grass/sand cap
- *       at {@code topY} chosen by waterline proximity.</li>
- *   <li><b>Ores</b> — vanilla {@code ORE_COAL} and {@code ORE_IRON} configured
- *       features dispatched at random positions within the stone column. Same
- *       feature Minecraft uses for natural overworld ore generation.</li>
- *   <li><b>Surface flora</b> — vanilla {@code PATCH_GRASS_PLAIN},
- *       {@code PATCH_DANDELION}, {@code PATCH_POPPY} configured features run
- *       on the grass surface. Real Minecraft flora patches, not hand-placed
- *       single blocks.</li>
- *   <li><b>Trees</b> — vanilla {@code OAK} configured feature run at scattered
- *       positions with minimum-spacing rules. Produces real vanilla-shaped
- *       oak trees with proper trunk variance, canopy noise, and root behavior.</li>
- * </ol>
+ * <pre>
+ *   center:                topY = seaLevel + maxHeight        (hill)
+ *   surfaceRadius:         topY = seaLevel                    (beach / waterline)
+ *   beyond surfaceRadius:  topY drops linearly toward -maxDepth (underwater slope)
+ *   underwaterRadius:      topY = seaLevel - maxDepth         (slope reaches floor)
+ *   beyond underwaterRadius: skipped — natural seafloor untouched
+ * </pre>
  *
- * <p>Caves are limited to the stone foundation (below {@code topY - 3}) so the
- * surface never has random craters punched through it. Ore and flora dispatch
- * use vanilla feature.generate calls which integrate with Minecraft's chunk
- * tracking, so the placed features participate in light updates, are saved
- * properly, and look identical to organically-generated content.
+ * <p>The profile produces an island whose underwater footprint extends roughly
+ * <code>2 * surfaceRadius</code> outward, forming a gradual cone that meets the
+ * ambient seafloor. Visually the island has roots; the player can swim out and
+ * see sand sloping down into rock and then natural ocean floor.
+ *
+ * <p>Block layers (per column):
+ * <pre>
+ *   y = topY (when topY &gt; seaLevel+1):  GRASS_BLOCK
+ *   y = topY (when topY &lt;= seaLevel+1): SAND  (beach cap or underwater cap)
+ *   y in (seaLevel, topY-1]:             DIRT
+ *   y in (topY-4, seaLevel]:             SAND  (waterline + underwater topsoil)
+ *   y &lt;= topY-4 and y &lt; seaLevel-2:   STONE  (foundation, with 3D cave carving)
+ * </pre>
+ *
+ * <p>Caves carve through deep stone via {@link SimplexNoiseSampler}. Trees,
+ * flora, and ore are dispatched via vanilla {@code ConfiguredFeature.generate}
+ * so they look identical to organically-generated content.
  */
 public final class NaturalIslandBuilder {
-
-    /** How deep the underwater foundation may extend (block probe depth). */
-    private static final int UNDERWATER_FOUNDATION_DEPTH = 14;
 
     /** Cave-noise threshold. Higher = fewer caves. */
     private static final double CAVE_THRESHOLD = 0.55;
 
-    public static Result build(ServerWorld world, double cx, double cz, double radius,
+    /** Maximum stone-foundation depth below sea level. The underwater slope
+     *  tapers down to this depth at the underwater extent. */
+    private static final int MAX_DEPTH_BELOW_SEA = 12;
+
+    public static Result build(ServerWorld world, double cx, double cz, double surfaceRadius,
                                 int maxHeight, double edgeBias, long shapeSeed, long noiseSeed) {
         int seaLevel = world.getSeaLevel();
-        IslandShape shape = new IslandShape(cx, cz, radius, shapeSeed);
+        // Underwater extent: 2x the surface radius. The foundation extends outward
+        // this much as it tapers down to the natural seafloor.
+        double underwaterRadius = surfaceRadius * 2.0;
 
-        // 3D cave noise — Minecraft's own simplex sampler so the result looks the
-        // same as natural carver-style cavities.
-        SimplexNoiseSampler caveNoise = new SimplexNoiseSampler(new CheckedRandom(noiseSeed ^ 0xC4_5E_C4_5EL));
+        SimplexNoiseSampler caveNoise =
+            new SimplexNoiseSampler(new CheckedRandom(noiseSeed ^ 0xC4_5E_C4_5EL));
 
-        int xFrom = (int) Math.floor(cx - radius - 4);
-        int xTo   = (int) Math.ceil (cx + radius + 4);
-        int zFrom = (int) Math.floor(cz - radius - 4);
-        int zTo   = (int) Math.ceil (cz + radius + 4);
+        int reach = (int) Math.ceil(underwaterRadius) + 4;
+        int xFrom = (int) Math.floor(cx) - reach;
+        int xTo   = (int) Math.floor(cx) + reach;
+        int zFrom = (int) Math.floor(cz) - reach;
+        int zTo   = (int) Math.floor(cz) + reach;
 
         List<int[]> grassTops = new ArrayList<>();
         List<int[]> coreTops  = new ArrayList<>();
         int centerTopY = seaLevel + 2;
 
-        // ─── Step 1-3: heightmap + stone (with caves) + topsoil + cap ─────────
+        // ─── Main terrain pass — every column that might host island material ──
         for (int x = xFrom; x <= xTo; x++) {
             for (int z = zFrom; z <= zTo; z++) {
-                if (!shape.contains(x, z)) continue;
+                int topY = profileTopY(x, z, cx, cz, surfaceRadius, underwaterRadius,
+                                       maxHeight, MAX_DEPTH_BELOW_SEA, noiseSeed, seaLevel);
+                if (topY == Integer.MIN_VALUE) continue;
 
-                int topY = computeTopY(x, z, cx, cz, radius, maxHeight, edgeBias, seaLevel, noiseSeed);
                 int floor = findOceanFloor(world, x, z, seaLevel);
-                if (topY <= floor) continue;
+                if (topY <= floor) continue; // below natural floor — leave alone
 
                 if (x == (int) cx && z == (int) cz) centerTopY = Math.max(seaLevel + 1, topY);
 
@@ -98,15 +103,15 @@ public final class NaturalIslandBuilder {
             }
         }
 
-        // ─── Step 4: ores via vanilla feature.generate ────────────────────────
+        // ─── Vanilla configured-feature dispatch (ore + flora + trees) ───────
         Random rng = new Random(noiseSeed ^ 0x0E_BA_0E_BAL);
-        placeOres(world, (int) cx, (int) cz, (int) radius, seaLevel, rng);
-
-        // ─── Step 5 & 6: surface features via vanilla feature.generate ────────
-        // (Tree count proportional to grass area; flora proportional to grass area.)
+        placeOres(world, (int) cx, (int) cz, (int) surfaceRadius, seaLevel, rng);
         placeVanillaTrees(world, coreTops, Math.max(2, coreTops.size() / 50), 5, rng);
         placeVanillaGrassPatches(world, grassTops, Math.max(2, grassTops.size() / 30), rng);
         placeVanillaFlowerPatches(world, grassTops, Math.max(1, grassTops.size() / 80), rng);
+
+        Mists.LOG.info("Mists: built blended-foundation island at ({}, {}) — surfaceR={} underwaterR={} grassCells={}",
+            (int) cx, (int) cz, (int) surfaceRadius, (int) underwaterRadius, grassTops.size());
 
         return new Result(grassTops, coreTops, centerTopY, seaLevel);
     }
@@ -114,52 +119,85 @@ public final class NaturalIslandBuilder {
     public record Result(List<int[]> grassTops, List<int[]> coreTops, int centerTopY, int seaLevel) {}
 
     // ─────────────────────────────────────────────────────────────────────────────
-    // Per-column construction with 3D cave carving
+    // Density profile — the key change for v0.13
+    // ─────────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Continuous height profile producing a sloped foundation that blends into
+     * the ocean floor.
+     *
+     * <ul>
+     *   <li>dist in [0, surfaceRadius]: smoothstep falloff from {@code seaLevel + maxHeight} to {@code seaLevel}</li>
+     *   <li>dist in (surfaceRadius, underwaterRadius]: curved taper from {@code seaLevel} down to {@code seaLevel - maxDepth}</li>
+     *   <li>dist beyond underwaterRadius: returns {@link Integer#MIN_VALUE} → caller skips, natural seafloor stays</li>
+     * </ul>
+     *
+     * @return absolute world Y of the topmost block, or MIN_VALUE if out of extent
+     */
+    public static int profileTopY(int x, int z, double cx, double cz,
+                                   double surfaceRadius, double underwaterRadius,
+                                   int maxHeight, int maxDepth, long noiseSeed, int seaLevel) {
+        double ddx = x - cx, ddz = z - cz;
+        double dist = Math.sqrt(ddx * ddx + ddz * ddz);
+
+        if (dist > underwaterRadius + 1) return Integer.MIN_VALUE;
+
+        // Two-octave coherent noise — varies the shoreline and underwater slope.
+        double coarse = sampleOctave(x, z, Math.max(20.0, surfaceRadius), noiseSeed);
+        double fine   = sampleOctave(x, z, Math.max( 7.0, surfaceRadius * 0.32), noiseSeed ^ 0x9E3779B1L);
+        double noiseAdjust = coarse * 1.3 + fine * 0.5;
+
+        double base;
+        if (dist <= surfaceRadius) {
+            double t = 1.0 - (dist / surfaceRadius);
+            double smoothed = t * t * (3.0 - 2.0 * t); // smoothstep
+            base = smoothed * maxHeight;
+        } else {
+            double t = (dist - surfaceRadius) / (underwaterRadius - surfaceRadius);
+            // Curved taper — gentler near shore, steeper toward seafloor.
+            double curved = t * t;
+            base = -curved * maxDepth;
+        }
+
+        // Dampen noise near the shore so the waterline doesn't become a jagged stairs.
+        double dampening = (dist <= surfaceRadius) ? 0.7 : 0.4;
+        double profile = base + noiseAdjust * dampening;
+
+        return seaLevel + (int) Math.round(profile);
+    }
+
+    /**
+     * Legacy entry point used by callers that pre-date v0.13. Maps the old
+     * single-radius signature onto the new piecewise profile by treating the
+     * passed radius as the surface radius and using 2x for the underwater extent.
+     *
+     * @deprecated prefer {@link #profileTopY} which takes both radii explicitly
+     */
+    @Deprecated
+    public static int computeTopY(int x, int z, double cx, double cz, double radius,
+                                   int maxHeight, double edgeBias, int seaLevel, long noiseSeed) {
+        return profileTopY(x, z, cx, cz, radius, radius * 2.0,
+                           maxHeight, MAX_DEPTH_BELOW_SEA, noiseSeed, seaLevel);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // Column construction
     // ─────────────────────────────────────────────────────────────────────────────
 
     private static void buildColumn(ServerWorld world, int x, int z,
                                     int floor, int topY, int seaLevel, long noiseSeed,
                                     SimplexNoiseSampler caveNoise) {
-        boolean isBeach = topY <= seaLevel + 1;
-        int topsoilStart = topY - 3;
+        boolean isUnderwaterOnly = topY <= seaLevel;
+        boolean isBeach = topY <= seaLevel + 1 && !isUnderwaterOnly;
 
-        // Stone foundation — every cell tested for cave carving. Surface 4 blocks
-        // (topY-3 .. topY) are NEVER carved so the surface stays intact.
-        int stoneTop = Math.min(topsoilStart - 1, topY - 1);
-        int stoneBottom = Math.max(floor + 1, seaLevel - UNDERWATER_FOUNDATION_DEPTH);
-        for (int y = stoneBottom; y <= stoneTop && y <= topY; y++) {
-            // 3D cave check — leave any deep stone column open as a small cave
-            // wherever the simplex noise is high.
-            boolean carve = isCave(caveNoise, x, y, z) && y < topY - 4 && y < seaLevel + 1;
-            BlockState block;
-            if (carve) {
-                // Inside a cave below the surface — air. Vanilla would also do
-                // lava lakes deep down, but we keep this conservative.
-                block = Blocks.CAVE_AIR.getDefaultState();
-            } else if (y < seaLevel - 1 && coherentBool(x, y, z, noiseSeed ^ 0xCAFEBABEL, 0.18)) {
-                block = Blocks.GRAVEL.getDefaultState();
-            } else {
-                block = Blocks.STONE.getDefaultState();
-            }
+        for (int y = floor + 1; y <= topY; y++) {
+            BlockState block = pickBlock(y, topY, seaLevel, x, z, noiseSeed, caveNoise);
             setIfReplaceable(world, x, y, z, block);
         }
 
-        // Topsoil (dirt above water, sand at/below water).
-        int topsoilLow = Math.max(topsoilStart, floor + 1);
-        for (int y = topsoilLow; y <= topY - 1; y++) {
-            BlockState mid = (y <= seaLevel)
-                ? Blocks.SAND.getDefaultState()
-                : Blocks.DIRT.getDefaultState();
-            setIfReplaceable(world, x, y, z, mid);
-        }
-
-        // Cap.
-        BlockState cap = isBeach ? Blocks.SAND.getDefaultState() : Blocks.GRASS_BLOCK.getDefaultState();
-        world.setBlockState(new BlockPos(x, topY, z), cap, 2);
-
-        // Clear any natural land above (defensive).
-        int clearTop = topY + 8;
-        for (int y = topY + 1; y <= clearTop; y++) {
+        // Defensive: clear any natural land that might exist above our placed top
+        // (e.g. if the locate-biome fallback dropped us at a coastline).
+        for (int y = topY + 1; y <= topY + 8; y++) {
             BlockPos p = new BlockPos(x, y, z);
             BlockState bs = world.getBlockState(p);
             if (!bs.isAir() && !bs.isOf(Blocks.WATER)) {
@@ -168,9 +206,31 @@ public final class NaturalIslandBuilder {
         }
     }
 
-    /** True if the 3D cave noise at (x, y, z) crosses the carving threshold. */
+    private static BlockState pickBlock(int y, int topY, int seaLevel,
+                                         int x, int z, long noiseSeed,
+                                         SimplexNoiseSampler caveNoise) {
+        if (y == topY) {
+            if (topY > seaLevel + 1) return Blocks.GRASS_BLOCK.getDefaultState();
+            return Blocks.SAND.getDefaultState();
+        }
+        if (y > seaLevel) {
+            return Blocks.DIRT.getDefaultState();
+        }
+        // y <= seaLevel — underwater material
+        if (y > topY - 4) {
+            return Blocks.SAND.getDefaultState();
+        }
+        // Deep stone foundation with cave carving + occasional gravel pockets.
+        if (y < seaLevel - 2 && isCave(caveNoise, x, y, z)) {
+            return Blocks.CAVE_AIR.getDefaultState();
+        }
+        if (y < seaLevel - 1 && coherentBool(x, y, z, noiseSeed ^ 0xCAFEBABEL, 0.18)) {
+            return Blocks.GRAVEL.getDefaultState();
+        }
+        return Blocks.STONE.getDefaultState();
+    }
+
     private static boolean isCave(SimplexNoiseSampler noise, int x, int y, int z) {
-        // Coarse cave channels stretched horizontally so caves feel tunnel-like.
         double n = noise.sample(x * 0.06, y * 0.12, z * 0.06);
         return n > CAVE_THRESHOLD;
     }
@@ -189,10 +249,8 @@ public final class NaturalIslandBuilder {
     // Vanilla configured-feature dispatch
     // ─────────────────────────────────────────────────────────────────────────────
 
-    /** Place vanilla ore configured features within the island's stone column. */
     private static void placeOres(ServerWorld world, int cx, int cz, int radius,
                                    int seaLevel, Random rng) {
-        // Modest counts so the island isn't a mine — just enough to be interesting.
         int coalAttempts = 3 + rng.nextInt(3);
         int ironAttempts = 1 + rng.nextInt(2);
 
@@ -212,7 +270,6 @@ public final class NaturalIslandBuilder {
         }
     }
 
-    /** Place vanilla {@code TreeConfiguredFeatures.OAK} with minimum spacing. */
     private static void placeVanillaTrees(ServerWorld world, List<int[]> cells,
                                            int target, int minSpacing, Random rng) {
         if (cells.isEmpty() || target <= 0) return;
@@ -234,14 +291,11 @@ public final class NaturalIslandBuilder {
                 placed.add(c);
                 count++;
             } else {
-                // Couldn't place a vanilla tree here (sapling-would-survive failed).
-                // Move on; the cell list has plenty of candidates.
-                placed.add(c); // mark as tried so we don't infinite-loop on it
+                placed.add(c);
             }
         }
     }
 
-    /** Place vanilla tall-grass patches. */
     private static void placeVanillaGrassPatches(ServerWorld world, List<int[]> cells,
                                                   int patches, Random rng) {
         if (cells.isEmpty() || patches <= 0) return;
@@ -252,7 +306,6 @@ public final class NaturalIslandBuilder {
         }
     }
 
-    /** Place vanilla dandelion + poppy patches. */
     private static void placeVanillaFlowerPatches(ServerWorld world, List<int[]> cells,
                                                    int patches, Random rng) {
         if (cells.isEmpty() || patches <= 0) return;
@@ -266,7 +319,6 @@ public final class NaturalIslandBuilder {
         }
     }
 
-    /** Run a vanilla configured feature at the given position. */
     private static boolean tryGenerateFeature(ServerWorld world,
                                                RegistryKey<ConfiguredFeature<?, ?>> key,
                                                BlockPos pos, Random javaRng) {
@@ -285,25 +337,8 @@ public final class NaturalIslandBuilder {
     }
 
     // ─────────────────────────────────────────────────────────────────────────────
-    // Heightmap (unchanged from v0.11)
+    // Helpers
     // ─────────────────────────────────────────────────────────────────────────────
-
-    public static int computeTopY(int x, int z, double cx, double cz, double radius,
-                                   int maxHeight, double edgeBias, int seaLevel, long noiseSeed) {
-        double ddx = x - cx, ddz = z - cz;
-        double dist = Math.sqrt(ddx * ddx + ddz * ddz);
-        double normalized = Math.min(1.0, dist / radius);
-        double s = 1.0 - normalized;
-        double falloff = s * s * (3.0 - 2.0 * s);
-        double coarseScale = Math.max(20.0, radius * 1.0);
-        double fineScale   = Math.max( 7.0, radius * 0.32);
-        double coarse = sampleOctave(x, z, coarseScale, noiseSeed);
-        double fine   = sampleOctave(x, z, fineScale,   noiseSeed ^ 0x9E3779B1L);
-        double base = falloff * maxHeight;
-        double variation = coarse * 1.4 + fine * 0.6;
-        double bias = -edgeBias * (1.0 - falloff);
-        return seaLevel + (int) Math.round(base + variation + bias);
-    }
 
     public static double sampleOctave(double x, double z, double scale, long seed) {
         double sx = x / scale, sz = z / scale;
@@ -343,27 +378,25 @@ public final class NaturalIslandBuilder {
     }
 
     public static int findOceanFloor(ServerWorld world, int x, int z, int seaLevel) {
-        for (int y = seaLevel - 1; y >= seaLevel - UNDERWATER_FOUNDATION_DEPTH - 4; y--) {
+        for (int y = seaLevel - 1; y >= seaLevel - 18; y--) {
             BlockState bs = world.getBlockState(new BlockPos(x, y, z));
             if (!bs.isAir() && !bs.isOf(Blocks.WATER)) {
                 return y;
             }
         }
-        return seaLevel - UNDERWATER_FOUNDATION_DEPTH;
+        return seaLevel - 18;
     }
 
     // ─────────────────────────────────────────────────────────────────────────────
-    // Legacy hand-placed methods (kept for compatibility with older callers)
+    // Deprecated bridges
     // ─────────────────────────────────────────────────────────────────────────────
 
-    /** @deprecated The new {@link #build} path uses vanilla TREE features instead. */
     @Deprecated
     public static void scatterOaks(ServerWorld world, List<int[]> coreCells, int target,
                                     int minSpacing, Random rng) {
         placeVanillaTrees(world, coreCells, target, minSpacing, rng);
     }
 
-    /** @deprecated The new {@link #build} path uses vanilla flora features. */
     @Deprecated
     public static void scatterFlora(ServerWorld world, List<int[]> grassTops, Random rng,
                                      int count, BlockState plant, int minSpacing) {
