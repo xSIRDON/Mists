@@ -23,6 +23,9 @@ public final class PlayerJoinClamp {
     public static void register() {
         ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> {
             ServerPlayerEntity player = handler.player;
+            // Creative / spectator players bypass the join-time rescue too —
+            // if they join far from the island they can fly there themselves.
+            if (BoundarySystem.isCreativeOrSpectator(player)) return;
             ServerWorld world = player.getServerWorld();
             MistsWorldData data = MistsWorldData.get(world);
 

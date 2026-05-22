@@ -14,6 +14,7 @@ public final class PearlClamp {
         ServerEntityEvents.ENTITY_LOAD.register((entity, world) -> {
             if (!(entity instanceof EnderPearlEntity pearl)) return;
             if (!(pearl.getOwner() instanceof ServerPlayerEntity player)) return;
+            if (BoundarySystem.isCreativeOrSpectator(player)) return; // creative bypass
             int level = LevelZBridge.readOverallLevel(player);
             ServerWorld serverWorld = (ServerWorld) world;
             MistsWorldData data = MistsWorldData.get(serverWorld);

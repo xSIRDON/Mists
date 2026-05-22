@@ -35,6 +35,12 @@ public class BackgroundRendererMixin {
         Entity entity = camera.getFocusedEntity();
         if (entity == null) return;
 
+        // Creative / spectator bypass — no mist overlay for these gamemodes.
+        // (Other entities in third-person etc. fall through to normal fog logic.)
+        if (entity instanceof net.minecraft.entity.player.PlayerEntity p) {
+            if (p.getAbilities().creativeMode || p.isSpectator()) return;
+        }
+
         double radius = MistState.effectiveRadius();
         if (!Double.isFinite(radius) || radius > 25_000) return;
 

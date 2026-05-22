@@ -51,6 +51,12 @@ public final class BoundarySystem {
             lastTier.put(player.getUuid(), currentTier.ordinal());
         }
 
+        // Creative and spectator players bypass the boundary entirely — no
+        // hostile-waters debuff, no hard clamp. The radius packet still gets
+        // sent so the client can adjust mist rendering, but the client-side
+        // fog mixin also opts out when the local player is creative/spectator.
+        if (isCreativeOrSpectator(player)) return;
+
         Vec3d pos = player.getPos();
         BoundaryBand band = BoundaryMath.classify(pos.x, pos.z, cx, cz, radius);
         switch (band) {
@@ -58,6 +64,11 @@ public final class BoundarySystem {
             case WALL, VISUAL, BEYOND -> hardClamp(player, cx, cz, radius);
             default -> {}
         }
+    }
+
+    /** True if the player should be exempt from boundary enforcement (creative or spectator). */
+    public static boolean isCreativeOrSpectator(ServerPlayerEntity player) {
+        return player.isCreative() || player.isSpectator();
     }
 
     private static void hardClamp(ServerPlayerEntity player, double cx, double cz, double radius) {

@@ -17,12 +17,20 @@ public final class VehicleClamp {
                 Entity vehicle = player.getVehicle();
                 if (vehicle == null) continue;
                 // Find the lowest LevelZ level among all human passengers of this vehicle.
+                // Creative/spectator passengers are skipped — if ANY passenger is creative,
+                // the vehicle is exempt from clamping entirely.
                 int lowest = Integer.MAX_VALUE;
+                boolean anyCreative = false;
                 for (Entity p : vehicle.getPassengerList()) {
                     if (p instanceof ServerPlayerEntity sp) {
+                        if (BoundarySystem.isCreativeOrSpectator(sp)) {
+                            anyCreative = true;
+                            break;
+                        }
                         lowest = Math.min(lowest, LevelZBridge.readOverallLevel(sp));
                     }
                 }
+                if (anyCreative) continue;
                 if (lowest == Integer.MAX_VALUE) continue;
                 if (!(player.getWorld() instanceof ServerWorld serverWorld)) continue;
                 MistsWorldData data = MistsWorldData.get(serverWorld);
