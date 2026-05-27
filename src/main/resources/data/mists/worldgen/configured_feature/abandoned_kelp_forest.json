@@ -1,0 +1,44 @@
+{
+  "type": "minecraft:random_patch",
+  "config": {
+    "tries": 24,
+    "xz_spread": 5,
+    "y_spread": 2,
+    "feature": {
+      "feature": {
+        "type": "minecraft:kelp",
+        "config": {}
+      },
+      "placement": [
+        {
+          "type": "minecraft:block_predicate_filter",
+          "predicate": {
+            "type": "minecraft:all_of",
+            "predicates": [
+              {
+                "type": "minecraft:matching_blocks",
+                "blocks": [
+                  "minecraft:water"
+                ]
+              },
+              {
+                "type": "minecraft:matching_blocks",
+                "blocks": [
+                  "minecraft:sand",
+                  "minecraft:gravel",
+                  "minecraft:dirt",
+                  "minecraft:stone"
+                ],
+                "offset": [
+                  0,
+                  -1,
+                  0
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

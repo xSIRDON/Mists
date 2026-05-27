@@ -26,7 +26,8 @@
       "minecraft:lake_lava_surface"
     ],
     [
-      "minecraft:amethyst_geode"
+      "minecraft:amethyst_geode",
+      "mists:weathered_stone_patch_placed"
     ],
     [
       "minecraft:monster_room",
@@ -73,7 +74,11 @@
       "minecraft:glow_lichen",
       "minecraft:seagrass_deep",
       "minecraft:seagrass_simple",
-      "minecraft:kelp_cold"
+      "minecraft:kelp_cold",
+      "mists:driftwood_patch_placed",
+      "mists:dense_seagrass_meadow_placed",
+      "mists:abandoned_kelp_forest_placed",
+      "mists:bone_scatter_placed"
     ],
     [
       "minecraft:freeze_top_layer"
@@ -98,9 +103,9 @@
     "water_ambient": [
       {
         "type": "minecraft:cod",
-        "maxCount": 6,
-        "minCount": 3,
-        "weight": 10
+        "maxCount": 3,
+        "minCount": 1,
+        "weight": 6
       }
     ],
     "water_creature": [
@@ -108,13 +113,7 @@
         "type": "minecraft:squid",
         "maxCount": 4,
         "minCount": 1,
-        "weight": 1
-      },
-      {
-        "type": "minecraft:dolphin",
-        "maxCount": 2,
-        "minCount": 1,
-        "weight": 1
+        "weight": 2
       }
     ]
   },

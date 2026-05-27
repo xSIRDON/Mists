@@ -1,0 +1,71 @@
+{
+  "type": "minecraft:disk",
+  "config": {
+    "half_height": 1,
+    "radius": {
+      "type": "minecraft:uniform",
+      "value": {
+        "min_inclusive": 2,
+        "max_inclusive": 3
+      }
+    },
+    "state_provider": {
+      "fallback": {
+        "type": "minecraft:weighted_state_provider",
+        "entries": [
+          {
+            "data": {
+              "Name": "minecraft:oak_log",
+              "Properties": {
+                "axis": "x"
+              }
+            },
+            "weight": 4
+          },
+          {
+            "data": {
+              "Name": "minecraft:oak_log",
+              "Properties": {
+                "axis": "z"
+              }
+            },
+            "weight": 4
+          },
+          {
+            "data": {
+              "Name": "minecraft:stripped_oak_log",
+              "Properties": {
+                "axis": "x"
+              }
+            },
+            "weight": 3
+          },
+          {
+            "data": {
+              "Name": "minecraft:stripped_oak_log",
+              "Properties": {
+                "axis": "z"
+              }
+            },
+            "weight": 3
+          },
+          {
+            "data": {
+              "Name": "minecraft:mossy_cobblestone"
+            },
+            "weight": 2
+          }
+        ]
+      },
+      "rules": []
+    },
+    "target": {
+      "type": "minecraft:matching_blocks",
+      "blocks": [
+        "minecraft:sand",
+        "minecraft:gravel",
+        "minecraft:dirt"
+      ]
+    }
+  }
+}
