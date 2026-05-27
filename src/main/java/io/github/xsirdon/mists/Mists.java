@@ -1,11 +1,9 @@
 package io.github.xsirdon.mists;
 
-import io.github.xsirdon.mists.block.MistsBlocks;
 import io.github.xsirdon.mists.boundary.BoundarySystem;
 import io.github.xsirdon.mists.boundary.PearlClamp;
 import io.github.xsirdon.mists.boundary.PlayerJoinClamp;
 import io.github.xsirdon.mists.boundary.VehicleClamp;
-import io.github.xsirdon.mists.item.MistsItems;
 import io.github.xsirdon.mists.worldgen.IslandPlacer;
 import io.github.xsirdon.mists.worldgen.MistsBiomes;
 import io.github.xsirdon.mists.worldgen.feature.MistsFeatures;
@@ -20,12 +18,10 @@ public final class Mists implements ModInitializer {
     @Override public void onInitialize() {
         LOG.info("Mists initialising (server/common)");
 
-        // v0.21: content registration. Order matters only for the FEATURE
-        // registry — feature types must exist before any datapack JSON that
-        // references them is parsed, which happens during server start, so
-        // we register here on common init.
-        MistsBlocks.register();
-        MistsItems.register();
+        // Feature-type registration must happen before datapack JSON that
+        // references our types is parsed (parsing happens at server start).
+        // The Mists Open Ocean biome's worldgen content uses our custom
+        // tall_kelp feature type, so register on common init.
         MistsFeatures.register();
 
         BoundarySystem.register();

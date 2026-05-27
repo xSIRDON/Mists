@@ -10,12 +10,5 @@
   "mists.toast.tier_4": "The mainland nears.",
   "mists.toast.tier_open": "The mist is gone.",
 
-  "block.mists.mist_lantern": "Mist Lantern",
-  "block.mists.mist_lantern.tooltip.line1": "§7A lantern lit by crystallised mist.",
-
-  "item.mists.mist_crystal": "Mist Crystal",
-  "item.mists.mist_crystal.tooltip.line1": "§7Resonates with the unknown.",
-  "item.mists.mist_crystal.tooltip.line2": "§8Found where the mist has lingered.",
-
   "biome.mists.mists_open_ocean": "Mists Open Ocean"
 }

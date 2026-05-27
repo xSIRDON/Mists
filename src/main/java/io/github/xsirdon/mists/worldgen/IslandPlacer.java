@@ -4,7 +4,6 @@ import com.mojang.datafixers.util.Pair;
 import io.github.xsirdon.mists.Mists;
 import io.github.xsirdon.mists.worldgen.density.MistsIslandConfig;
 import io.github.xsirdon.mists.worldgen.density.MistsIslandRegistry;
-import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerWorldEvents;
 import net.minecraft.registry.entry.RegistryEntry;
 import net.minecraft.registry.tag.BiomeTags;
@@ -159,12 +158,6 @@ public final class IslandPlacer {
                 "Mists: island placed within water-world bubble at ({}, {}) surfaceR={}",
                 cfg.cx, cfg.cz, (int) islandRadius);
 
-            // v0.21: stamp the spawn hut once the island chunks are actually
-            // generated. ServerWorldEvents.LOAD fires before chunks are
-            // streamed, so defer the structural writes to the first tick to
-            // ensure getTopY returns the real surface height.
-            scheduleSpawnHut(world, cfg, data);
-
             Mists.LOG.info("Mists: spawn placement complete ({} record)", data.islands.size());
             return;
         }
@@ -217,43 +210,6 @@ public final class IslandPlacer {
         // they'll be vanilla "whatever the seed put at this distance" terrain).
 
         Mists.LOG.info("Mists: spawn placement complete ({} record)", data.islands.size());
-    }
-
-    /**
-     * v0.21: place the spawn hut on the first server tick AFTER the
-     * ServerWorldEvents.LOAD hook runs, so chunk generation has had a chance
-     * to actually produce the island surface that {@code SpawnHutPlacer}
-     * queries via the world-surface heightmap.
-     *
-     * <p>Uses {@link MistsWorldData#hutPlaced} as an idempotency guard, so a
-     * restart in the middle of the dance, or a player wandering back into
-     * spawn, doesn't re-stamp the structure.
-     */
-    private static void scheduleSpawnHut(ServerWorld world, MistsIslandConfig cfg, MistsWorldData data) {
-        if (data.hutPlaced) return;
-
-        // Register a one-shot tick listener that fires on every tick of every
-        // world until the spawn chunks are loaded for our world. Self-removes
-        // when it has done its job.
-        ServerTickEvents.START_SERVER_TICK.register(new ServerTickEvents.StartTick() {
-            private int waited = 0;
-            @Override public void onStartTick(net.minecraft.server.MinecraftServer server) {
-                MistsWorldData live = MistsWorldData.get(world);
-                if (live.hutPlaced) return; // someone else handled it
-                // Wait a couple of ticks so chunk generation around (cx, cz) settles.
-                if (waited++ < 4) return;
-                if (!world.isChunkLoaded(cfg.cx >> 4, cfg.cz >> 4)) return;
-                try {
-                    SpawnHutPlacer.place(world, cfg);
-                    live.hutPlaced = true;
-                    live.markDirty();
-                } catch (Throwable t) {
-                    Mists.LOG.warn("Mists: SpawnHutPlacer failed; will not retry this session", t);
-                    live.hutPlaced = true; // don't keep failing every tick
-                    live.markDirty();
-                }
-            }
-        });
     }
 
     private IslandPlacer() {}
