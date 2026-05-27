@@ -9,7 +9,6 @@ import io.github.xsirdon.mists.worldgen.density.MistsIslandRegistry;
 import net.minecraft.block.Blocks;
 import net.minecraft.registry.RegistryEntryLookup;
 import net.minecraft.util.math.noise.DoublePerlinNoiseSampler;
-import net.minecraft.world.biome.source.util.MultiNoiseUtil;
 import net.minecraft.world.gen.chunk.ChunkGeneratorSettings;
 import net.minecraft.world.gen.densityfunction.DensityFunction;
 import net.minecraft.world.gen.densityfunction.DensityFunctionTypes;
@@ -21,14 +20,12 @@ import org.spongepowered.asm.mixin.Mutable;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.Redirect;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-import java.util.HashMap;
-import java.util.Map;
-
 /**
- * v0.18 hook: installs a "water-world bubble" around world origin and grafts
- * the Mists island in at its centre.
+ * v0.18 hook (v0.23 timing fix): installs a "water-world bubble" around world
+ * origin and grafts the Mists island in at its centre.
  *
  * <h2>What it does</h2>
  *
@@ -50,15 +47,35 @@ import java.util.Map;
  * vanilla terrain takes over again past ~2200 blocks from origin with no hard
  * edge.
  *
- * <h2>Why we have to rebuild the multi-noise sampler</h2>
+ * <h2>Why we wrap BEFORE vanilla's apply-visitor (v0.23 fix)</h2>
  *
- * {@code NoiseConfig.<init>} captures the climate-sampler references from the
- * original router. Mutating {@code this.noiseRouter} after the fact is not
- * enough: the biome source reads {@code this.multiNoiseSampler}, and that
- * sampler holds direct references to the pre-wrap continents/erosion/depth/...
- * functions. So we also reach in and replace {@code multiNoiseSampler} with one
- * built from the wrapped router, applied through the same unwrapping visitor
- * vanilla uses (see {@link NoiseConfigUnwrapVisitor}).
+ * v0.18 wrapped at {@code @At("TAIL")} — i.e. AFTER vanilla's constructor had
+ * already run {@code unappliedRouter.apply(LegacyNoiseDensityFunctionVisitor)}.
+ * Vanilla's visitor walks the density tree and injects {@code seed} into the
+ * concrete noise leaves (e.g. {@code class_6544$class_6552}). Wrapping after
+ * the walk meant our fresh {@code add(...)} / {@code max(...)} combinator nodes
+ * (built from the already-visited tree) were correct, BUT we also rebuilt
+ * {@code multiNoiseSampler} from the wrapped router, and the references we
+ * passed to it were never visited by anything that injected the seed into
+ * leaves reachable along paths we mutated.
+ *
+ * <p>The crash surfaced when Fabric Biome API's {@code ChunkNoiseSampler.<init>}
+ * mixin called {@code fabric_getSeed()} on a {@code class_6544$class_6552}
+ * noise leaf reached through one of our combinator nodes, hit a
+ * {@code seed == null}, and NPE'd during structure generation (BiomeMakeover's
+ * MansionFeature was the trigger).
+ *
+ * <p>v0.23 fix: redirect the {@code NoiseRouter.apply(visitor)} call inside
+ * {@code NoiseConfig.<init>}. We build the wrapped router from the
+ * <em>unapplied</em> router (the raw, never-visited one off
+ * {@code ChunkGeneratorSettings}), then hand vanilla's
+ * {@code LegacyNoiseDensityFunctionVisitor} to {@code wrapped.apply(visitor)}.
+ * Vanilla then walks our entire combined tree — every leaf, including those
+ * inside our {@code add} / {@code max} combinators, gets the seed injected as
+ * part of the normal pipeline. The fully-visited router is stored as
+ * {@code this.noiseRouter}, and the {@code multiNoiseSampler} vanilla builds
+ * immediately after observes our wrapped continents through the same pipeline
+ * — no rebuild needed.
  *
  * <h2>Scope</h2>
  *
@@ -69,32 +86,112 @@ import java.util.Map;
 @Mixin(NoiseConfig.class)
 public abstract class NoiseConfigMixin {
 
+    /**
+     * Per-thread capture of the {@code (settings, seed)} pair from the current
+     * {@code NoiseConfig.<init>} invocation. Necessary because constructors run
+     * on whatever thread requests world-gen state (server-startup, biome-source
+     * cache priming, dimension reload), so a single static field is not safe.
+     *
+     * <p>Populated at {@code @Inject(HEAD)}, consumed by the {@code @Redirect}
+     * around {@code NoiseRouter.apply}, cleared at {@code @Inject(RETURN)}.
+     */
+    private static final ThreadLocal<ChunkGeneratorSettings> SETTINGS_CAPTURE =
+        new ThreadLocal<>();
+
+    /** Companion to {@link #SETTINGS_CAPTURE}; {@code long[1]} so {@code null}
+     *  means "no seed captured on this thread". */
+    private static final ThreadLocal<long[]> SEED_CAPTURE = new ThreadLocal<>();
+
+    /** Retained but no longer mutated post-construction — the redirect installs
+     *  the wrapped router during the normal apply pipeline. */
     @Mutable
     @Shadow @Final
     private NoiseRouter noiseRouter;
 
-    @Mutable
-    @Shadow @Final
-    private MultiNoiseUtil.MultiNoiseSampler multiNoiseSampler;
+    @Inject(method = "<init>", at = @At("HEAD"))
+    private void mists$captureConstructorArgs(ChunkGeneratorSettings settings,
+                                               RegistryEntryLookup<DoublePerlinNoiseSampler.NoiseParameters> noiseParams,
+                                               long seed,
+                                               CallbackInfo ci) {
+        SETTINGS_CAPTURE.set(settings);
+        SEED_CAPTURE.set(new long[]{seed});
+    }
 
-    @Inject(method = "<init>", at = @At("TAIL"))
-    private void mists$installWaterWorldBubble(ChunkGeneratorSettings settings,
-                                                RegistryEntryLookup<DoublePerlinNoiseSampler.NoiseParameters> noiseParams,
-                                                long seed,
-                                                CallbackInfo ci) {
-        if (!MistsIslandRegistry.isEnabled()) return;
-        if (!isOverworldShaped(settings)) return;
+    /**
+     * Replaces the vanilla call
+     * {@code unappliedRouter.apply(LegacyNoiseDensityFunctionVisitor)} inside
+     * {@code NoiseConfig.<init>}.
+     *
+     * <p>When the captured settings are overworld-shaped and the Mists island
+     * registry is enabled, we wrap the unapplied router first, then call
+     * {@code apply(visitor)} on the wrapped router so vanilla's seed-injection
+     * visitor walks our combined tree end-to-end. The returned, fully-visited
+     * router is what the constructor will store as {@code this.noiseRouter}.
+     *
+     * <p>If we're not in an overworld context (or the registry is disabled),
+     * delegate straight through — same behaviour as vanilla.
+     */
+    @Redirect(
+        method = "<init>",
+        at = @At(
+            value = "INVOKE",
+            target = "Lnet/minecraft/world/gen/noise/NoiseRouter;apply(Lnet/minecraft/world/gen/densityfunction/DensityFunction$DensityFunctionVisitor;)Lnet/minecraft/world/gen/noise/NoiseRouter;"
+        )
+    )
+    private NoiseRouter mists$wrapBeforeApply(NoiseRouter unappliedRouter,
+                                               DensityFunction.DensityFunctionVisitor visitor) {
+        ChunkGeneratorSettings settings = SETTINGS_CAPTURE.get();
+        long[] seedHolder = SEED_CAPTURE.get();
 
+        if (settings == null || seedHolder == null
+            || !MistsIslandRegistry.isEnabled()
+            || !isOverworldShaped(settings)) {
+            // Not our dimension / mod disabled — vanilla semantics exactly.
+            return unappliedRouter.apply(visitor);
+        }
+
+        long seed = seedHolder[0];
         MistsIslandConfig cfg = MistsIslandRegistry.getOrDerive(seed, settings.seaLevel());
 
+        NoiseRouter wrappedUnapplied = wrapRouter(unappliedRouter, cfg);
+
+        // Now let vanilla's LegacyNoiseDensityFunctionVisitor walk the WHOLE
+        // wrapped tree, including the leaves underneath our add/max nodes, so
+        // every noise leaf gets its seed populated.
+        NoiseRouter applied = wrappedUnapplied.apply(visitor);
+
+        Mists.LOG.info(
+            "Mists: water-world bubble installed ({}-block radius), island at ({}, {}) — seed {}",
+            (int) BubbleProfile.BUBBLE_RADIUS, cfg.cx, cfg.cz, seed);
+
+        return applied;
+    }
+
+    @Inject(method = "<init>", at = @At("RETURN"))
+    private void mists$clearCapture(ChunkGeneratorSettings settings,
+                                     RegistryEntryLookup<DoublePerlinNoiseSampler.NoiseParameters> noiseParams,
+                                     long seed,
+                                     CallbackInfo ci) {
+        SETTINGS_CAPTURE.remove();
+        SEED_CAPTURE.remove();
+    }
+
+    /**
+     * Build a new {@link NoiseRouter} that wraps the bubble-bias and island
+     * functions over the relevant channels of {@code base}. {@code base} must
+     * be the unapplied router straight off {@code ChunkGeneratorSettings} — the
+     * caller is responsible for handing the result through vanilla's apply
+     * visitor so the seeds get injected.
+     */
+    private static NoiseRouter wrapRouter(NoiseRouter base, MistsIslandConfig cfg) {
         // ── Wrap continents (drives biome source) ────────────────────────────
         // -2.0 added to continentalness inside the bubble pushes the value well
-        // into vanilla's deep-ocean range (~ -0.45 .. -1.05 in the OverworldBiomeCreator
-        // climate parameter tables), so the biome source emits ocean biomes for
-        // every column inside the bubble.
+        // into vanilla's deep-ocean range (~ -0.45 .. -1.05 in the
+        // OverworldBiomeCreator climate parameter tables), so the biome source
+        // emits ocean biomes for every column inside the bubble.
         DensityFunction continentsBias = new BubbleBiasFunction(-2.0);
         DensityFunction wrappedContinents =
-            DensityFunctionTypes.add(noiseRouter.continents(), continentsBias);
+            DensityFunctionTypes.add(base.continents(), continentsBias);
 
         // ── Wrap finalDensity (drives chunk-gen terrain) + island on top ─────
         // -50 added inside the bubble forces vanilla's pre-aquifer density well
@@ -104,7 +201,7 @@ public abstract class NoiseConfigMixin {
         DensityFunction terrainBias = new BubbleBiasFunction(-50.0);
         DensityFunction island = new MistsIslandDensityFunction(cfg);
         DensityFunction wrappedFinal = DensityFunctionTypes.max(
-            DensityFunctionTypes.add(noiseRouter.finalDensity(), terrainBias),
+            DensityFunctionTypes.add(base.finalDensity(), terrainBias),
             island);
 
         // ── Wrap initialDensityWithoutJaggedness ─────────────────────────────
@@ -112,50 +209,25 @@ public abstract class NoiseConfigMixin {
         // height vanilla while finalDensity says ocean, surface rules can paint
         // alpine snow on bedrock. Same bias keeps the surface estimator in sync.
         DensityFunction wrappedInitial = DensityFunctionTypes.add(
-            noiseRouter.initialDensityWithoutJaggedness(), terrainBias);
+            base.initialDensityWithoutJaggedness(), terrainBias);
 
-        // ── Assemble the wrapped router ──────────────────────────────────────
-        NoiseRouter old = this.noiseRouter;
-        NoiseRouter wrapped = new NoiseRouter(
-            old.barrierNoise(),
-            old.fluidLevelFloodednessNoise(),
-            old.fluidLevelSpreadNoise(),
-            old.lavaNoise(),
-            old.temperature(),
-            old.vegetation(),
+        return new NoiseRouter(
+            base.barrierNoise(),
+            base.fluidLevelFloodednessNoise(),
+            base.fluidLevelSpreadNoise(),
+            base.lavaNoise(),
+            base.temperature(),
+            base.vegetation(),
             wrappedContinents,
-            old.erosion(),
-            old.depth(),
-            old.ridges(),
+            base.erosion(),
+            base.depth(),
+            base.ridges(),
             wrappedInitial,
             wrappedFinal,
-            old.veinToggle(),
-            old.veinRidged(),
-            old.veinGap()
+            base.veinToggle(),
+            base.veinRidged(),
+            base.veinGap()
         );
-        this.noiseRouter = wrapped;
-
-        // ── Rebuild multiNoiseSampler so the biome source sees the wrap ──────
-        // Vanilla's NoiseConfig constructor builds its climate sampler by
-        // .apply()'ing every climate channel through an anonymous visitor that
-        // unwraps RegistryEntryHolder + Wrapping nodes (so the sampler reads
-        // raw noise rather than the cache-cell-smoothed worldgen channels).
-        // Mirror that exactly so our wrapped continents flows through with the
-        // same semantics.
-        NoiseConfigUnwrapVisitor unwrap = new NoiseConfigUnwrapVisitor();
-        this.multiNoiseSampler = new MultiNoiseUtil.MultiNoiseSampler(
-            wrapped.temperature().apply(unwrap),
-            wrapped.vegetation().apply(unwrap),
-            wrapped.continents().apply(unwrap),
-            wrapped.erosion().apply(unwrap),
-            wrapped.depth().apply(unwrap),
-            wrapped.ridges().apply(unwrap),
-            settings.spawnTarget()
-        );
-
-        Mists.LOG.info(
-            "Mists: water-world bubble installed ({}-block radius), island at ({}, {}) — seed {}",
-            (int) BubbleProfile.BUBBLE_RADIUS, cfg.cx, cfg.cz, seed);
     }
 
     /** Overworld signature: sea level 63, water as default fluid, stone as
@@ -167,36 +239,5 @@ public abstract class NoiseConfigMixin {
             && s.defaultFluid().isOf(Blocks.WATER)
             && s.defaultBlock().isOf(Blocks.STONE)
             && s.hasAquifers();
-    }
-
-    /**
-     * Mirror of the anonymous {@code DensityFunctionVisitor} that
-     * {@code NoiseConfig.<init>} uses for its climate sampler: unwraps
-     * {@code RegistryEntryHolder} and {@code Wrapping} nodes so the multi-noise
-     * sampler reads raw noise rather than the cache-cell-smoothed worldgen
-     * channels. Cached per-instance so the same upstream node identity
-     * collapses to the same unwrapped function (matters for the climate
-     * sampler's own caching).
-     */
-    private static final class NoiseConfigUnwrapVisitor
-            implements DensityFunction.DensityFunctionVisitor {
-        private final Map<DensityFunction, DensityFunction> cache = new HashMap<>();
-
-        @Override
-        public DensityFunction apply(DensityFunction f) {
-            return cache.computeIfAbsent(f, NoiseConfigUnwrapVisitor::unwrap);
-        }
-
-        private static DensityFunction unwrap(DensityFunction f) {
-            if (f instanceof DensityFunctionTypes.RegistryEntryHolder holder) {
-                return holder.function().value();
-            }
-            // Wrapping itself is package-private; cast through the public
-            // Wrapper marker interface, which exposes the same .wrapped() accessor.
-            if (f instanceof DensityFunctionTypes.Wrapper wrapper) {
-                return wrapper.wrapped();
-            }
-            return f;
-        }
     }
 }
