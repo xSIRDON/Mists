@@ -77,7 +77,8 @@
       "minecraft:kelp_cold",
       "mists:driftwood_patch_placed",
       "mists:dense_seagrass_meadow_placed",
-      "mists:abandoned_kelp_forest_placed",
+      "mists:tall_kelp_normal_placed",
+      "mists:tall_kelp_giant_placed",
       "mists:bone_scatter_placed"
     ],
     [

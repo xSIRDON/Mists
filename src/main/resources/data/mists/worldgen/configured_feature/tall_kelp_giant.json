@@ -1,0 +1,8 @@
+{
+  "type": "mists:tall_kelp",
+  "config": {
+    "min_height": 18,
+    "max_height": 24,
+    "spread_chance": 0.3
+  }
+}

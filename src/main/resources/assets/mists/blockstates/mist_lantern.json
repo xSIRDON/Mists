@@ -1,0 +1,10 @@
+{
+  "variants": {
+    "hanging=false": {
+      "model": "mists:block/mist_lantern"
+    },
+    "hanging=true": {
+      "model": "mists:block/mist_lantern_hanging"
+    }
+  }
+}
