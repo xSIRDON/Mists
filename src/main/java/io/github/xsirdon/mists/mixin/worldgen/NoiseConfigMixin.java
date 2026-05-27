@@ -108,11 +108,18 @@ public abstract class NoiseConfigMixin {
     @Shadow @Final
     private NoiseRouter noiseRouter;
 
+    /**
+     * Must be {@code static}: Mixin requires {@code @Inject(HEAD)} on a constructor
+     * to use a static handler, because at the entry of {@code <init>} the implicit
+     * {@code super()} call has not yet run and {@code this} is uninitialised. We
+     * only write to static {@link ThreadLocal}s here, so {@code static} costs us
+     * nothing and satisfies the injector.
+     */
     @Inject(method = "<init>", at = @At("HEAD"))
-    private void mists$captureConstructorArgs(ChunkGeneratorSettings settings,
-                                               RegistryEntryLookup<DoublePerlinNoiseSampler.NoiseParameters> noiseParams,
-                                               long seed,
-                                               CallbackInfo ci) {
+    private static void mists$captureConstructorArgs(ChunkGeneratorSettings settings,
+                                                      RegistryEntryLookup<DoublePerlinNoiseSampler.NoiseParameters> noiseParams,
+                                                      long seed,
+                                                      CallbackInfo ci) {
         SETTINGS_CAPTURE.set(settings);
         SEED_CAPTURE.set(new long[]{seed});
     }
